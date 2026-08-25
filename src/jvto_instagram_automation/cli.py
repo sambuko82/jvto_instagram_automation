@@ -4,6 +4,7 @@ import argparse
 from pathlib import Path
 
 from .config import load_settings
+from .drive_ingestion import DriveIngestion
 from .publisher import publish_to_instagram, upload_to_imgbb
 from .rendering import create_carousel
 from .review_parser import load_review_payload
@@ -18,6 +19,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--imgbb-key', default=None)
     parser.add_argument('--instagram-token', default=None)
     parser.add_argument('--instagram-user-id', default=None)
+    parser.add_argument('--drive-export', action='store_true')
     return parser
 
 
@@ -40,6 +42,12 @@ def main(argv: list[str] | None = None) -> int:
         settings.instagram_access_token = args.instagram_token
     if args.instagram_user_id:
         settings.instagram_user_id = args.instagram_user_id
+
+    if args.drive_export:
+        ingestion = DriveIngestion(settings.drive_folder_id, settings.drive_access_token)
+        exported = ingestion.export_reviews_to_json(settings.project_root / 'data' / 'drive_reviews.json')
+        print(f'Exported {len(exported)} review(s) from Drive to data/drive_reviews.json')
+        settings.local_json = settings.project_root / 'data' / 'drive_reviews.json'
 
     payload = load_review_payload(settings)
     card_paths = create_carousel(payload, settings.output_dir)

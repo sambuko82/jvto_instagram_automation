@@ -11,6 +11,8 @@ class Settings:
     output_dir: Path
     file_id: str
     local_json: Path | None = None
+    drive_folder_id: str | None = None
+    drive_access_token: str | None = None
     imgbb_api_key: str | None = None
     instagram_access_token: str | None = None
     instagram_user_id: str | None = None
@@ -41,6 +43,8 @@ def load_settings() -> Settings:
         output_dir=output_dir,
         file_id=os.getenv('FILE_ID_GOOGLE_REVIEW_PAGE_1', '1ZlhSg1S1kEyfjA8AZIYL_fLOEFHJHVhn'),
         local_json=Path(os.getenv('LOCAL_JSON', '')).resolve() if os.getenv('LOCAL_JSON') else None,
+        drive_folder_id=os.getenv('GOOGLE_DRIVE_FOLDER_ID') or None,
+        drive_access_token=os.getenv('GOOGLE_DRIVE_ACCESS_TOKEN') or None,
         imgbb_api_key=os.getenv('IMGBB_API_KEY') or None,
         instagram_access_token=os.getenv('INSTAGRAM_ACCESS_TOKEN') or None,
         instagram_user_id=os.getenv('INSTAGRAM_USER_ID') or None,

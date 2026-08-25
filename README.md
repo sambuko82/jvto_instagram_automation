@@ -23,8 +23,18 @@ This repository contains a reusable starter for turning JVTO reviews into Instag
 
 ## Environment variables
 - `FILE_ID_GOOGLE_REVIEW_PAGE_1` - Drive file ID for a Google review JSON export
-- `GOOGLE_DRIVE_FOLDER_ID` - optional folder ID for future Drive ingestion
+- `GOOGLE_DRIVE_FOLDER_ID` - folder ID for the review drive folder
+- `GOOGLE_DRIVE_ACCESS_TOKEN` - OAuth access token for Google Drive API
 - `IMGBB_API_KEY` - optional ImgBB upload key
 - `INSTAGRAM_ACCESS_TOKEN` - optional Instagram publishing token
 - `INSTAGRAM_USER_ID` - optional Instagram account ID
 - `OUTPUT_DIR` - output directory for generated cards
+
+## Google Drive ingestion
+If you have a Google Drive access token, you can pull JSON review files from the configured folder:
+
+```bash
+python -m jvto_instagram_automation --drive-export
+```
+
+This will write `data/drive_reviews.json` and then generate the carousel from that exported data.
