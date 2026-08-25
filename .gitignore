@@ -8,3 +8,5 @@ __pycache__/
 .venv/
 out/
 .pytest_cache/
+
+src/jvto_instagram_automation.egg-info/
