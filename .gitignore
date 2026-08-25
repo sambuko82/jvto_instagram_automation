@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.png
+*.jpg
+*.jpeg
+*.log
+.env
+.venv/
+out/
+.pytest_cache/

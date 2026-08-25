@@ -1,0 +1,16 @@
+README.md
+pyproject.toml
+src/jvto_instagram_automation/__init__.py
+src/jvto_instagram_automation/__main__.py
+src/jvto_instagram_automation/cli.py
+src/jvto_instagram_automation/config.py
+src/jvto_instagram_automation/models.py
+src/jvto_instagram_automation/publisher.py
+src/jvto_instagram_automation/rendering.py
+src/jvto_instagram_automation/review_parser.py
+src/jvto_instagram_automation.egg-info/PKG-INFO
+src/jvto_instagram_automation.egg-info/SOURCES.txt
+src/jvto_instagram_automation.egg-info/dependency_links.txt
+src/jvto_instagram_automation.egg-info/requires.txt
+src/jvto_instagram_automation.egg-info/top_level.txt
+tests/test_review_parser.py
