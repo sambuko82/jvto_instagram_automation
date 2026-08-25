@@ -5,8 +5,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-import requests
-
+from .agentic_extraction import extract_narrative_agentic
 from .config import Settings
 from .models import Narrative, ReviewPayload
 
@@ -71,21 +70,21 @@ def extract_narrative(review_text: str, guest_name: str | None = None) -> Narrat
     )
 
 
-def fetch_google_review_json(file_id: str) -> dict[str, Any] | list[Any]:
-    url = f'https://drive.google.com/uc?export=download&id={file_id}'
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
-    try:
-        return json.loads(response.text)
-    except json.JSONDecodeError:
-        return []
+def extract_narrative_with_agentic(review_text: str, guest_name: str | None = None, settings: Settings | None = None) -> Narrative:
+    if settings is not None and settings.agentic:
+        return extract_narrative_agentic(review_text, guest_name=guest_name, settings=settings)
+    return extract_narrative(review_text, guest_name=guest_name)
 
 
 def load_review_payload(settings: Settings) -> ReviewPayload:
     if settings.local_json and settings.local_json.exists():
         payload = json.loads(settings.local_json.read_text(encoding='utf-8'))
     else:
-        payload = fetch_google_review_json(settings.file_id)
+        fallback_path = settings.project_root / 'data' / 'sample_review.json'
+        if fallback_path.exists():
+            payload = json.loads(fallback_path.read_text(encoding='utf-8'))
+        else:
+            payload = []
 
     if isinstance(payload, dict) and 'reviews' in payload:
         reviews = payload['reviews']
@@ -98,5 +97,5 @@ def load_review_payload(settings: Settings) -> ReviewPayload:
     review_text = first.get('comment') or first.get('text') or first.get('reviewText') or ''
     reviewer = first.get('reviewer') or {}
     guest_name = reviewer.get('displayName') or reviewer.get('name') or first.get('reviewerName') or first.get('authorName') or 'Guest'
-    narrative = extract_narrative(review_text, guest_name=guest_name)
+    narrative = extract_narrative_with_agentic(review_text, guest_name=guest_name, settings=settings)
     return ReviewPayload(original=first, narrative=narrative)

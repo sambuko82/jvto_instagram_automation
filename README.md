@@ -22,19 +22,33 @@ This repository contains a reusable starter for turning JVTO reviews into Instag
 - `tests/` - lightweight regression tests
 
 ## Environment variables
-- `FILE_ID_GOOGLE_REVIEW_PAGE_1` - Drive file ID for a Google review JSON export
-- `GOOGLE_DRIVE_FOLDER_ID` - folder ID for the review drive folder
-- `GOOGLE_DRIVE_ACCESS_TOKEN` - OAuth access token for Google Drive API
+- `FILE_ID_GOOGLE_REVIEW_PAGE_1` - legacy placeholder; not required for the current flow
+- `GOOGLE_DRIVE_FOLDER_ID` - optional folder ID hint for the review drive folder
+- `GOOGLE_DRIVE_FOLDER` - folder name used by the Composio connector (defaults to `JVTO Reviews`)
+- `COMPOSIO_API_KEY` - required for the Composio-based Drive auth flow
+- `COMPOSIO_USER_ID` - optional user/session identity for the Composio connection
 - `IMGBB_API_KEY` - optional ImgBB upload key
 - `INSTAGRAM_ACCESS_TOKEN` - optional Instagram publishing token
 - `INSTAGRAM_USER_ID` - optional Instagram account ID
 - `OUTPUT_DIR` - output directory for generated cards
 
 ## Google Drive ingestion
-If you have a Google Drive access token, you can pull JSON review files from the configured folder:
+The preferred path is to use Composio so the workflow does not call Google APIs directly.
 
 ```bash
+python -m jvto_instagram_automation --oauth
 python -m jvto_instagram_automation --drive-export
 ```
 
-This will write `data/drive_reviews.json` and then generate the carousel from that exported data.
+The first command starts a Composio Google Drive authorization flow. The second command uses the authenticated Composio session to read review JSON files from the configured Drive folder and export them into `data/drive_reviews.json`, then generates the carousel from that exported data.
+
+If Composio is not configured yet, the workflow still works with the local sample review file.
+
+## Agentic review extraction
+If you want richer social captions and visual prompts, enable the agentic mode with Composio:
+
+```bash
+AGENTIC_EXTRACTION=1 COMPOSIO_API_KEY=... python -m jvto_instagram_automation --agentic --local-json data/sample_review.json
+```
+
+The agentic path uses Composio-backed agent tooling when a Composio API key is available. If not, it automatically falls back to the rule-based parser so the workflow still runs without any external model key.

@@ -12,6 +12,8 @@ class Narrative:
     destinations: list[str] = field(default_factory=list)
     quote_short: str = ''
     highlight: str = 'scenery'
+    caption: str = ''
+    visual_prompt: str = ''
 
 
 @dataclass(slots=True)

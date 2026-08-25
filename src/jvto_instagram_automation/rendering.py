@@ -74,7 +74,7 @@ def build_card_1(payload: ReviewPayload, output_path: Path) -> None:
     draw.rounded_rectangle((40, 40, CANVAS_W - 40, CANVAS_H - 40), radius=36, fill=(255, 255, 255, 30), outline=(255, 255, 255, 80))
 
     title = f"GUEST STORY: {payload.narrative.guest_name} - {', '.join(payload.narrative.destinations)}"
-    subtitle = f"Experiencing {payload.narrative.destinations[0]} • {payload.narrative.guest_type}"
+    subtitle = payload.narrative.caption or f"Experiencing {payload.narrative.destinations[0]} • {payload.narrative.guest_type}"
     title_font = _load_font(44, bold=True)
     sub_font = _load_font(28)
     _draw_text_box(draw, title, int(CANVAS_W * 0.06), int(CANVAS_H * 0.12), int(CANVAS_W * 0.88), int(CANVAS_H * 0.16), title_font, 'white')
@@ -111,13 +111,13 @@ def build_card_3(payload: ReviewPayload, output_path: Path) -> None:
 
     if payload.narrative.highlight == 'blue fire':
         headline = 'Ijen Blue Fire Experience'
-        body = 'A dramatic sunrise experience that turns the volcano into a once-in-a-lifetime story.'
+        body = payload.narrative.visual_prompt or 'A dramatic sunrise experience that turns the volcano into a once-in-a-lifetime story.'
     elif payload.narrative.highlight == 'waterfall':
         headline = 'Tumpak Sewu Adventure'
-        body = 'A powerful waterfall journey with nature, views, and unforgettable photo moments.'
+        body = payload.narrative.visual_prompt or 'A powerful waterfall journey with nature, views, and unforgettable photo moments.'
     else:
         headline = 'Memorable East Java Adventure'
-        body = 'The journey combines comfort, scenery, and local guidance in one seamless experience.'
+        body = payload.narrative.visual_prompt or 'The journey combines comfort, scenery, and local guidance in one seamless experience.'
 
     headline_font = _load_font(38, bold=True)
     body_font = _load_font(26)

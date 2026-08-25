@@ -20,6 +20,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--instagram-token', default=None)
     parser.add_argument('--instagram-user-id', default=None)
     parser.add_argument('--drive-export', action='store_true')
+    parser.add_argument('--oauth', action='store_true', help='Launch the Composio-based Google Drive auth flow')
+    parser.add_argument('--agentic', action='store_true', help='Use LLM-based review-to-caption extraction when credentials are available')
     return parser
 
 
@@ -36,6 +38,8 @@ def main(argv: list[str] | None = None) -> int:
         settings.file_id = args.file_id
     if args.publish:
         settings.publish = True
+    if args.agentic:
+        settings.agentic = True
     if args.imgbb_key:
         settings.imgbb_api_key = args.imgbb_key
     if args.instagram_token:
@@ -43,11 +47,24 @@ def main(argv: list[str] | None = None) -> int:
     if args.instagram_user_id:
         settings.instagram_user_id = args.instagram_user_id
 
+    ingestion = DriveIngestion(
+        settings.drive_folder_id,
+        settings.drive_access_token,
+        settings.composio_api_key,
+        settings.composio_user_id,
+        settings.project_root,
+    )
+    if args.oauth:
+        result = ingestion.authorize()
+        print(result.get('message', 'Composio auth flow started'))
+
     if args.drive_export:
-        ingestion = DriveIngestion(settings.drive_folder_id, settings.drive_access_token)
         exported = ingestion.export_reviews_to_json(settings.project_root / 'data' / 'drive_reviews.json')
-        print(f'Exported {len(exported)} review(s) from Drive to data/drive_reviews.json')
-        settings.local_json = settings.project_root / 'data' / 'drive_reviews.json'
+        if exported:
+            print(f'Exported {len(exported)} review(s) from Drive to data/drive_reviews.json')
+            settings.local_json = settings.project_root / 'data' / 'drive_reviews.json'
+        else:
+            print('No reviews were returned from the Composio/Drive workflow. Falling back to the local sample input if available.')
 
     payload = load_review_payload(settings)
     card_paths = create_carousel(payload, settings.output_dir)
