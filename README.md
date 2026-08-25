@@ -36,13 +36,14 @@ This repository contains a reusable starter for turning JVTO reviews into Instag
 The preferred path is to use Composio so the workflow does not call Google APIs directly.
 
 ```bash
-python -m jvto_instagram_automation --oauth
+python -m jvto_instagram_automation --oauth --auth-provider drive
+python -m jvto_instagram_automation --oauth --auth-provider instagram
 python -m jvto_instagram_automation --drive-export
 ```
 
-The first command starts a Composio Google Drive authorization flow. The second command uses the authenticated Composio session to read review JSON files from the configured Drive folder and export them into `data/drive_reviews.json`, then generates the carousel from that exported data.
+The first command starts a Composio Google Drive authorization flow. The second starts a Composio Instagram authorization flow. The export command uses the authenticated Composio session to read review JSON files from the configured Drive folder and export them into `data/drive_reviews.json`, then generates the carousel from that exported data.
 
-If Composio is not configured yet, the workflow still works with the local sample review file.
+If Composio is not configured yet, the workflow still works with the local sample review file. For real publishing, both a Composio connection for Instagram and an ImgBB upload key (or a direct Instagram token) are recommended.
 
 ## Agentic review extraction
 If you want richer social captions and visual prompts, enable the agentic mode with Composio:

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+from .composio_publisher import ComposioPublisher
 from .config import load_settings
 from .drive_ingestion import DriveIngestion
 from .publisher import publish_to_instagram, upload_to_imgbb
@@ -20,7 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--instagram-token', default=None)
     parser.add_argument('--instagram-user-id', default=None)
     parser.add_argument('--drive-export', action='store_true')
-    parser.add_argument('--oauth', action='store_true', help='Launch the Composio-based Google Drive auth flow')
+    parser.add_argument('--oauth', action='store_true', help='Launch the Composio-based auth flow for Drive and Instagram')
+    parser.add_argument('--auth-provider', choices=['drive', 'instagram', 'all'], default='all', help='Which Composio connector to authorize')
     parser.add_argument('--agentic', action='store_true', help='Use LLM-based review-to-caption extraction when credentials are available')
     return parser
 
@@ -54,9 +56,19 @@ def main(argv: list[str] | None = None) -> int:
         settings.composio_user_id,
         settings.project_root,
     )
+    publisher = ComposioPublisher(
+        settings.composio_api_key,
+        settings.composio_user_id,
+        settings.project_root,
+    )
+
     if args.oauth:
-        result = ingestion.authorize()
-        print(result.get('message', 'Composio auth flow started'))
+        if args.auth_provider in {'drive', 'all'}:
+            drive_result = ingestion.authorize()
+            print(drive_result.get('message', 'Composio Drive auth flow started'))
+        if args.auth_provider in {'instagram', 'all'}:
+            instagram_result = publisher.start_auth_flow()
+            print(instagram_result.get('message', 'Composio Instagram auth flow started'))
 
     if args.drive_export:
         exported = ingestion.export_reviews_to_json(settings.project_root / 'data' / 'drive_reviews.json')
@@ -77,8 +89,16 @@ def main(argv: list[str] | None = None) -> int:
         img_url = None
         if settings.imgbb_api_key:
             img_url = upload_to_imgbb(card_paths[-1], settings.imgbb_api_key)
+
         caption = f"{payload.narrative.guest_name} shares a JVTO story about {', '.join(payload.narrative.destinations)}."
-        publish_result = publish_to_instagram(img_url or '', caption, settings.instagram_access_token, settings.instagram_user_id)
-        print(publish_result)
+        if settings.composio_api_key:
+            publish_result = publisher.publish_image(img_url or '', caption, settings.instagram_user_id)
+            print({'composio_publish': publish_result})
+        if not settings.composio_api_key or publish_result.get('status') in {'missing_api_key', 'unavailable', 'not_authorized', 'error'}:
+            if settings.instagram_access_token and settings.instagram_user_id:
+                publish_result = publish_to_instagram(img_url or '', caption, settings.instagram_access_token, settings.instagram_user_id)
+                print({'manual_publish': publish_result})
+            else:
+                print('Instagram publishing skipped because Composio and direct token credentials are not configured.')
 
     return 0
