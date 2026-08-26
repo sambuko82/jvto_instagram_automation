@@ -157,24 +157,27 @@ def build_caption(payload: ReviewPayload) -> str:
         '',
         f'"{narrative.quote_full or narrative.quote_short}"',
         '',
-        f"📍 Destinasi: {', '.join(narrative.destinations) or 'Bromo, Ijen'}",
+        f"📍 Destinations: {', '.join(narrative.destinations) or 'Bromo, Ijen'}",
     ]
     if narrative.guide_names or narrative.driver_names:
-        lines.append(
-            f"⛳ Tim Bertugas: Guide {', '.join(narrative.guide_names) or '-'} • Driver {', '.join(narrative.driver_names) or '-'}"
-        )
+        parts = []
+        if narrative.guide_names:
+            parts.append(f"Guide {', '.join(narrative.guide_names)}")
+        if narrative.driver_names:
+            parts.append(f"Driver {', '.join(narrative.driver_names)}")
+        lines.append(f"⛳ Local Team: {' • '.join(parts)}")
     if narrative.package:
-        lines.append(f"📦 Paket: {narrative.package} • {narrative.guest_type.title()} Journey")
+        lines.append(f"📦 Package: {narrative.package} • {narrative.guest_type.title()} Journey")
 
     if narrative.review_url_kind == 'specific' and narrative.review_url:
         lines += [
             '',
-            f'💯 Baca ulasan asli ini langsung di Google Maps: {narrative.review_url}',
+            f'💯 Read this exact review on Google Maps: {narrative.review_url}',
         ]
     elif narrative.review_url_kind == 'profile' and narrative.review_url:
         lines += [
             '',
-            f'💯 Lihat lebih banyak ulasan terverifikasi di profil Google Maps kami: {narrative.review_url}',
+            f'💯 See more verified reviews on our Google Maps profile: {narrative.review_url}',
         ]
     # 'none' -> no link line, no fabricated credibility claim.
 
@@ -232,5 +235,13 @@ def load_review_payload(settings: Settings) -> ReviewPayload:
         first_item = media_items[0]
         if isinstance(first_item, dict):
             narrative.bg_photo_url = first_item.get('thumbnailUrl') or first_item.get('url')
+        # Extra real photos (beyond the card-1 background) for cards 2/3 -
+        # only reviews with enough attached media get photo backgrounds
+        # there instead of the solid-color fallback.
+        narrative.secondary_photo_urls = [
+            item.get('thumbnailUrl') or item.get('url')
+            for item in media_items[1:4]
+            if isinstance(item, dict) and (item.get('thumbnailUrl') or item.get('url'))
+        ]
 
     return ReviewPayload(original=first, narrative=narrative)

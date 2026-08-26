@@ -60,13 +60,13 @@ class BuildCaptionTests(unittest.TestCase):
 
     def test_specific_link_claims_this_exact_review(self) -> None:
         caption = build_caption(self._payload('specific', 'https://maps.google.com/review/123'))
-        self.assertIn('ulasan asli ini langsung', caption)
+        self.assertIn('this exact review', caption)
         self.assertIn('https://maps.google.com/review/123', caption)
 
     def test_profile_link_does_not_overclaim(self) -> None:
         caption = build_caption(self._payload('profile', 'https://g.page/r/example/review'))
-        self.assertIn('lebih banyak ulasan terverifikasi', caption)
-        self.assertNotIn('ulasan asli ini langsung', caption)
+        self.assertIn('more verified reviews', caption)
+        self.assertNotIn('this exact review', caption)
 
     def test_no_link_omits_credibility_claim_entirely(self) -> None:
         caption = build_caption(self._payload('none', None))
