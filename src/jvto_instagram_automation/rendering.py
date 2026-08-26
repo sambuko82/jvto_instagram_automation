@@ -222,10 +222,17 @@ def build_card_2(payload: ReviewPayload, output_path: Path) -> None:
     draw.rounded_rectangle((int(CANVAS_W * 0.72), int(CANVAS_H * 0.06), int(CANVAS_W * 0.92), int(CANVAS_H * 0.12)), radius=16, fill=(255, 255, 255))
     _draw_text_box(draw, 'Guide Support', int(CANVAS_W * 0.72), int(CANVAS_H * 0.06), int(CANVAS_W * 0.20), int(CANVAS_H * 0.06), tag_font, '#2f2f2f', align='center')
 
-    guide_names = ', '.join(narrative.guide_names or ['Local Guide'])
-    driver_names = ', '.join(narrative.driver_names or ['Driver'])
-    label_text = f'Guide: {guide_names} • Driver: {driver_names}'
-    _draw_text_box(draw, label_text, int(CANVAS_W * 0.06), int(CANVAS_H * 0.82), int(CANVAS_W * 0.70), int(CANVAS_H * 0.08), label_font, 'white')
+    # Only credit guide/driver names actually present in the review - a
+    # fabricated "Local Guide" / "Driver" placeholder would misrepresent the
+    # review as naming a team member it never mentioned.
+    label_parts = []
+    if narrative.guide_names:
+        label_parts.append(f"Guide: {', '.join(narrative.guide_names)}")
+    if narrative.driver_names:
+        label_parts.append(f"Driver: {', '.join(narrative.driver_names)}")
+    if label_parts:
+        label_text = ' • '.join(label_parts)
+        _draw_text_box(draw, label_text, int(CANVAS_W * 0.06), int(CANVAS_H * 0.82), int(CANVAS_W * 0.70), int(CANVAS_H * 0.08), label_font, 'white')
     body_text = f'This review highlights the care behind the journey for {narrative.guest_type}.'
     _draw_text_box(draw, body_text, int(CANVAS_W * 0.06), int(CANVAS_H * 0.66), int(CANVAS_W * 0.88), int(CANVAS_H * 0.08), body_font, '#fef3d0')
     image.save(output_path)
