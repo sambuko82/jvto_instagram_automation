@@ -18,6 +18,9 @@ class Narrative:
     package: str = ''
     media_count: int = 0
     bg_photo_url: str | None = None
+    # Additional real photos from the review, used as backgrounds for cards
+    # 2/3 instead of solid-color filler when the review has enough of them.
+    secondary_photo_urls: list[str] = field(default_factory=list)
     review_url: str | None = None
     # 'specific' = review_url points at this exact review; 'profile' = general
     # business profile link used as fallback; 'none' = no link available at all.

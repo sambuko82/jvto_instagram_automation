@@ -146,13 +146,25 @@ def _build_background(image: Image.Image, accent: str) -> None:
     image.paste(composite.convert('RGB'), (0, 0))
 
 
+def _upgrade_google_photo_url(url: str) -> str:
+    # Google's review-media URLs default to a small thumbnail (e.g. 512x384)
+    # unless a size directive is appended. Request an exact, high-quality
+    # crop at canvas size instead of upscaling a low-res thumbnail.
+    if 'googleusercontent.com' not in url:
+        return url
+    base = url.split('=')[0]
+    return f'{base}=w{CANVAS_W}-h{CANVAS_H}-c'
+
+
 def _load_background_photo(bg_url: str | None, accent: str) -> Image.Image:
     if bg_url:
         try:
-            response = requests.get(bg_url, timeout=15)
+            response = requests.get(_upgrade_google_photo_url(bg_url), timeout=15)
             response.raise_for_status()
             photo = Image.open(BytesIO(response.content)).convert('RGB')
-            return photo.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+            if photo.size != (CANVAS_W, CANVAS_H):
+                photo = photo.resize((CANVAS_W, CANVAS_H), Image.LANCZOS)
+            return photo
         except Exception:
             pass
     image = Image.new('RGB', (CANVAS_W, CANVAS_H), (11, 17, 29))
@@ -193,8 +205,14 @@ def build_card_1(payload: ReviewPayload, output_path: Path) -> None:
 
 def build_card_2(payload: ReviewPayload, output_path: Path) -> None:
     narrative = payload.narrative
-    image = Image.new('RGB', (CANVAS_W, CANVAS_H), (33, 27, 20))
-    _build_background(image, '#b55e1f')
+    photo_url = narrative.secondary_photo_urls[0] if narrative.secondary_photo_urls else None
+    image = _load_background_photo(photo_url, '#b55e1f')
+    if photo_url:
+        # Darken the real photo so overlaid text stays readable, same
+        # treatment as the plain gradient fallback used to get for free.
+        overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        ImageDraw.Draw(overlay).rectangle((0, 0, CANVAS_W, CANVAS_H), fill=(0, 0, 0, 90))
+        image = Image.alpha_composite(image.convert('RGBA'), overlay).convert('RGB')
     draw = ImageDraw.Draw(image)
     _apply_glass_panel(image, (40, 40, CANVAS_W - 40, CANVAS_H - 40), 36, (255, 255, 255, 30), (255, 255, 255, 80))
 
@@ -215,8 +233,12 @@ def build_card_2(payload: ReviewPayload, output_path: Path) -> None:
 
 def build_card_3(payload: ReviewPayload, output_path: Path) -> None:
     narrative = payload.narrative
-    image = Image.new('RGB', (CANVAS_W, CANVAS_H), (16, 41, 88))
-    _build_background(image, '#2d6cdf')
+    photo_url = narrative.secondary_photo_urls[1] if len(narrative.secondary_photo_urls) > 1 else None
+    image = _load_background_photo(photo_url, '#2d6cdf')
+    if photo_url:
+        overlay = Image.new('RGBA', image.size, (0, 0, 0, 0))
+        ImageDraw.Draw(overlay).rectangle((0, 0, CANVAS_W, CANVAS_H), fill=(0, 0, 0, 90))
+        image = Image.alpha_composite(image.convert('RGBA'), overlay).convert('RGB')
     draw = ImageDraw.Draw(image)
     _apply_glass_panel(image, (40, 40, CANVAS_W - 40, CANVAS_H - 40), 36, (255, 255, 255, 30), (255, 255, 255, 80))
 
@@ -260,9 +282,9 @@ def build_card_4(payload: ReviewPayload, output_path: Path) -> None:
     # Plain text, no emoji: not every bundled font has emoji glyphs, and a
     # missing glyph renders as a tofu box (see _draw_star_rating above).
     if narrative.review_url_kind == 'specific':
-        link_note = 'Link ulasan asli tersedia di caption & Linktree Bio kami'
+        link_note = 'Full review link in caption & our Linktree bio'
     elif narrative.review_url_kind == 'profile':
-        link_note = 'Lihat lebih banyak ulasan terverifikasi di Linktree Bio kami'
+        link_note = 'See more verified reviews in our Linktree bio'
     else:
         link_note = None
 
