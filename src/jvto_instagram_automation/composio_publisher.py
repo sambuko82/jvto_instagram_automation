@@ -5,6 +5,36 @@ from pathlib import Path
 from typing import Any
 
 
+class _ComposioToolExecutor:
+    """Adapts the current Composio SDK (`client.tools.execute`) to the
+    `.execute(tool_name, kwargs)` shape the rest of this module expects.
+
+    The Composio SDK's `Composio(...).create(...).tools()` call now returns
+    Tool Router meta-tool schemas (for LLM-driven agents) rather than
+    directly callable per-action objects, so toolkit actions like
+    INSTAGRAM_CREATE_CAROUSEL_CONTAINER have to be invoked through
+    `client.tools.execute` instead.
+    """
+
+    def __init__(self, client: Any, user_id: str) -> None:
+        self._client = client
+        self._user_id = user_id
+
+    def execute(self, tool_name: str, kwargs: dict[str, Any]) -> Any:
+        response = self._client.tools.execute(
+            tool_name,
+            kwargs,
+            user_id=self._user_id,
+            dangerously_skip_version_check=True,
+        )
+        if isinstance(response, dict):
+            if response.get('successful') is False:
+                raise RuntimeError(response.get('error') or f'{tool_name} failed')
+            if 'data' in response:
+                return response['data']
+        return response
+
+
 class ComposioPublisher:
     """Publishes carousels to Instagram via Composio.
 
@@ -31,8 +61,8 @@ class ComposioPublisher:
             return None
 
         try:
-            composio = Composio(api_key=self.api_key)
-            return composio.create(user_id=self.user_id, toolkits=['instagram'])
+            client = Composio(api_key=self.api_key)
+            return _ComposioToolExecutor(client, self.user_id)
         except Exception:
             return None
 
@@ -63,21 +93,37 @@ class ComposioPublisher:
             return {'status': 'missing_api_key', 'message': 'COMPOSIO_API_KEY is not configured'}
 
         try:
-            session = self._get_session()
+            tools = self._get_session()
         except Exception as exc:  # pragma: no cover - optional dependency path
             return {'status': 'error', 'message': str(exc)}
-        if session is None:
+        if tools is None:
             return {
                 'status': 'not_authorized',
                 'message': "Composio SDK unavailable or Instagram not linked. Run 'composio link instagram' first.",
             }
 
-        try:
-            tools = session.tools()
-        except Exception as exc:  # pragma: no cover - optional dependency path
-            return {'status': 'error', 'message': str(exc)}
+        child_creation_ids: list[str] = []
+        for image_url in image_urls:
+            child_payload = {'ig_user_id': instagram_user_id, 'image_url': image_url, 'is_carousel_item': True}
+            try:
+                # INSTAGRAM_CREATE_MEDIA_CONTAINER is the confirmed real Composio
+                # action name for creating a single carousel-child container -
+                # INSTAGRAM_CREATE_CAROUSEL_CONTAINER only accepts already-created
+                # child creation_ids, not raw image URLs.
+                child_container = self._invoke_tool(
+                    tools,
+                    ('INSTAGRAM_CREATE_MEDIA_CONTAINER', 'instagram_create_media_container'),
+                    child_payload,
+                )
+            except Exception as exc:
+                return {'status': 'error', 'message': f'Failed to create carousel child container for {image_url}: {exc}'}
 
-        container_payload = {'ig_user_id': instagram_user_id, 'caption': caption, 'child_image_urls': image_urls}
+            child_id = child_container.get('id') if isinstance(child_container, dict) else getattr(child_container, 'id', None)
+            if not child_id:
+                return {'status': 'error', 'message': f'Child container created for {image_url} but no id was returned.', 'data': child_container}
+            child_creation_ids.append(child_id)
+
+        container_payload = {'ig_user_id': instagram_user_id, 'caption': caption, 'children': child_creation_ids}
         try:
             # INSTAGRAM_CREATE_CAROUSEL_CONTAINER is the confirmed real Composio
             # action name; the lowercase ones are kept only as a defensive

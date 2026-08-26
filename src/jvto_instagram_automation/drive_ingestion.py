@@ -5,6 +5,38 @@ import os
 from pathlib import Path
 from typing import Any
 
+import requests
+
+
+class _ComposioToolExecutor:
+    """Adapts the current Composio SDK (`client.tools.execute`) to the
+    `.execute(tool_name, kwargs)` shape the rest of this module expects.
+
+    The Composio SDK's `Composio(...).create(...).tools()` call now returns
+    Tool Router meta-tool schemas (for LLM-driven agents) rather than
+    directly callable per-action objects, so toolkit actions like
+    GOOGLEDRIVE_LIST_FILES have to be invoked through `client.tools.execute`
+    instead.
+    """
+
+    def __init__(self, client: Any, user_id: str) -> None:
+        self._client = client
+        self._user_id = user_id
+
+    def execute(self, tool_name: str, kwargs: dict[str, Any]) -> Any:
+        response = self._client.tools.execute(
+            tool_name,
+            kwargs,
+            user_id=self._user_id,
+            dangerously_skip_version_check=True,
+        )
+        if isinstance(response, dict):
+            if response.get('successful') is False:
+                raise RuntimeError(response.get('error') or f'{tool_name} failed')
+            if 'data' in response:
+                return response['data']
+        return response
+
 
 class ComposioConnector:
     """Reads JVTO review files from a Google Drive folder via Composio.
@@ -38,8 +70,8 @@ class ComposioConnector:
             return None
 
         try:
-            composio = Composio(api_key=self.api_key)
-            return composio.create(user_id=self.user_id, toolkits=['googledrive'])
+            client = Composio(api_key=self.api_key)
+            return _ComposioToolExecutor(client, self.user_id)
         except Exception:
             return None
 
@@ -89,6 +121,24 @@ class ComposioConnector:
                 return self._extract_content(payload['file'])
         return None
 
+    def _resolve_downloaded_content(self, payload: Any) -> str | None:
+        # GOOGLEDRIVE_DOWNLOAD_FILE returns the bytes behind a short-lived
+        # signed URL rather than inline content, so fetch it before falling
+        # back to the generic inline-content shapes handled by
+        # _extract_content.
+        if isinstance(payload, dict):
+            downloaded = payload.get('downloaded_file_content')
+            if isinstance(downloaded, dict):
+                s3url = downloaded.get('s3url') or downloaded.get('url')
+                if s3url:
+                    try:
+                        response = requests.get(s3url, timeout=30)
+                        response.raise_for_status()
+                        return response.text
+                    except Exception:
+                        return None
+        return self._extract_content(payload)
+
     def _looks_like_review_file(self, name: str | None) -> bool:
         if not name:
             return False
@@ -100,13 +150,8 @@ class ComposioConnector:
         return False
 
     def read_review_files(self, folder_id: str | None = None, folder_name: str | None = None) -> list[dict[str, Any]]:
-        session = self._get_session()
-        if session is None:
-            return []
-
-        try:
-            tools = session.tools()
-        except Exception:
+        tools = self._get_session()
+        if tools is None:
             return []
 
         folder = folder_id or os.getenv('GOOGLE_DRIVE_FOLDER_ID')
@@ -147,7 +192,11 @@ class ComposioConnector:
 
             content_payload: Any | None = None
             for tool_name in (
-                'GOOGLEDRIVE_GET_FILE_CONTENT',
+                # GOOGLEDRIVE_DOWNLOAD_FILE is the confirmed real Composio
+                # action name; the lowercase ones are kept only as a
+                # defensive fallback in case an older toolkit alias is
+                # registered instead.
+                'GOOGLEDRIVE_DOWNLOAD_FILE',
                 'googledrive_get_file_content',
                 'googledrive_read_file',
                 'googledrive_download_file',
@@ -157,7 +206,7 @@ class ComposioConnector:
                     content_payload = self._invoke_tool(
                         tools,
                         (tool_name,),
-                        {'file_id': file_id, 'id': file_id, 'name': name, 'file_name': name},
+                        {'fileId': file_id, 'file_id': file_id, 'id': file_id, 'name': name, 'file_name': name},
                     )
                     break
                 except Exception:
@@ -166,7 +215,7 @@ class ComposioConnector:
             if content_payload is None:
                 continue
 
-            content = self._extract_content(content_payload)
+            content = self._resolve_downloaded_content(content_payload)
             if content is None:
                 continue
 
