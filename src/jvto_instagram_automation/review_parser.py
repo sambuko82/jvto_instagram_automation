@@ -11,7 +11,13 @@ from .models import Narrative, ReviewPayload
 
 def _clean_review_text(text: str) -> str:
     cleaned = text or ''
-    cleaned = re.sub(r'\s*\((?:Translated by Google|Original)\)\s*', ' ', cleaned)
+    # Google's translated reviews append the original-language text after an
+    # "(Original)" marker. Drop it rather than keeping both languages
+    # concatenated - otherwise English keyword checks (guest_type, etc.) can
+    # false-positive on unrelated words in the other language (e.g. Spanish
+    # "solo" meaning "only" being read as "solo traveler").
+    cleaned = cleaned.split('(Original)')[0]
+    cleaned = re.sub(r'\s*\(Translated by Google\)\s*', ' ', cleaned)
     cleaned = re.sub(r'\s+', ' ', cleaned).strip()
     return cleaned
 
@@ -76,8 +82,12 @@ def extract_narrative(review_text: str, guest_name: str | None = None) -> Narrat
     elif 'family' in lowered:
         guest_type = 'family'
 
-    guides = re.findall(r'\bguide\s+([A-Z][a-z]+)', text, re.I)
-    drivers = re.findall(r'\bdriver\s+([A-Z][a-z]+)', text, re.I)
+    # Scope case-insensitivity to the literal word only - re.I on the whole
+    # pattern also made [A-Z] match lowercase letters, so it captured
+    # whatever word followed "guide"/"driver" (e.g. "is", "and") instead of
+    # requiring an actual capitalized name.
+    guides = re.findall(r'(?i:guide)\s+([A-Z][a-z]+)', text)
+    drivers = re.findall(r'(?i:driver)\s+([A-Z][a-z]+)', text)
 
     destinations = []
     for token, label in [
