@@ -12,7 +12,6 @@ class Settings:
     file_id: str
     local_json: Path | None = None
     drive_folder_id: str | None = None
-    drive_access_token: str | None = None
     composio_api_key: str | None = None
     composio_user_id: str | None = None
     imgbb_api_key: str | None = None
@@ -21,6 +20,8 @@ class Settings:
     publish: bool = False
     agentic: bool = False
     agentic_provider: str | None = None
+    review_priority_limit: int = 5
+    google_maps_profile_url: str = 'https://g.page/r/Cf9pQvQqZvQZEBM/review'
 
 
 def _load_dotenv(path: Path) -> None:
@@ -48,7 +49,6 @@ def load_settings() -> Settings:
         file_id=os.getenv('FILE_ID_GOOGLE_REVIEW_PAGE_1', '1ZlhSg1S1kEyfjA8AZIYL_fLOEFHJHVhn'),
         local_json=Path(os.getenv('LOCAL_JSON', '')).resolve() if os.getenv('LOCAL_JSON') else None,
         drive_folder_id=os.getenv('GOOGLE_DRIVE_FOLDER_ID') or os.getenv('GOOGLE_DRIVE_FOLDER') or None,
-        drive_access_token=os.getenv('GOOGLE_DRIVE_ACCESS_TOKEN') or None,
         composio_api_key=os.getenv('COMPOSIO_API_KEY') or None,
         composio_user_id=os.getenv('COMPOSIO_USER_ID') or None,
         imgbb_api_key=os.getenv('IMGBB_API_KEY') or None,
@@ -57,4 +57,6 @@ def load_settings() -> Settings:
         publish=os.getenv('PUBLISH', '0').lower() in {'1', 'true', 'yes'},
         agentic=os.getenv('AGENTIC_EXTRACTION', '0').lower() in {'1', 'true', 'yes'},
         agentic_provider=os.getenv('AGENTIC_PROVIDER') or None,
+        review_priority_limit=int(os.getenv('REVIEW_PRIORITY_LIMIT', '5')),
+        google_maps_profile_url=os.getenv('JVTO_GOOGLE_MAPS_PROFILE_URL') or 'https://g.page/r/Cf9pQvQqZvQZEBM/review',
     )

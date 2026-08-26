@@ -1,56 +1,38 @@
 from __future__ import annotations
 
-import json
 import os
-from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 
-@dataclass(slots=True)
-class InstagramAuthState:
-    session_id: str | None = None
-    connection_request_id: str | None = None
-    redirect_url: str | None = None
-    status: str = 'pending'
-
-
 class ComposioPublisher:
+    """Publishes carousels to Instagram via Composio.
+
+    Auth is handled entirely by the Composio CLI (`composio link instagram`)
+    ahead of time - no local auth-state file is written here. See
+    drive_ingestion.ComposioConnector for why the old DIY state-file approach
+    was removed rather than patched.
+    """
+
     def __init__(self, api_key: str | None = None, user_id: str | None = None, project_root: Path | None = None) -> None:
         self.api_key = api_key or os.getenv('COMPOSIO_API_KEY')
-        self.user_id = user_id or os.getenv('COMPOSIO_USER_ID')
+        self.user_id = user_id or os.getenv('COMPOSIO_USER_ID') or 'jvto_automation'
         self.project_root = Path(project_root or Path(__file__).resolve().parents[2])
-        self.state_path = self.project_root / '.instagram_auth.json'
 
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
-    def load_state(self) -> InstagramAuthState | None:
-        if not self.state_path.exists():
-            return None
-        payload = json.loads(self.state_path.read_text(encoding='utf-8'))
-        return InstagramAuthState(**payload)
-
-    def save_state(self, state: InstagramAuthState) -> None:
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        self.state_path.write_text(json.dumps(asdict(state), indent=2), encoding='utf-8')
-
     def _get_session(self) -> Any | None:
         if not self.api_key:
             return None
-
         try:
             from composio import Composio
         except Exception:
             return None
 
-        auth_state = self.load_state()
-        if not auth_state or not auth_state.session_id:
-            return None
-
-        composio = Composio(api_key=self.api_key)
         try:
-            return composio.use(auth_state.session_id)
+            composio = Composio(api_key=self.api_key)
+            return composio.create(user_id=self.user_id, toolkits=['instagram'])
         except Exception:
             return None
 
@@ -74,93 +56,52 @@ class ComposioPublisher:
                     continue
         raise RuntimeError('No compatible Instagram tool call succeeded')
 
-    def start_auth_flow(self) -> dict[str, Any]:
-        if not self.api_key:
-            return {'status': 'missing_api_key', 'message': 'Set COMPOSIO_API_KEY to start an Instagram auth flow.'}
-
-        try:
-            from composio import Composio
-        except Exception as exc:  # pragma: no cover - optional dependency path
-            return {'status': 'unavailable', 'message': f'Composio SDK is not available: {exc}'}
-
-        composio = Composio(api_key=self.api_key)
-        session = composio.create(user_id=self.user_id or 'jvto_automation', toolkits=['instagram'])
-        connection_request = session.authorize('instagram')
-
-        state = InstagramAuthState(
-            session_id=getattr(session, 'session_id', None),
-            connection_request_id=getattr(connection_request, 'id', None),
-            redirect_url=getattr(connection_request, 'redirect_url', None),
-            status=getattr(connection_request, 'status', 'pending'),
-        )
-        self.save_state(state)
-
-        return {
-            'status': 'auth_started',
-            'message': 'Open the redirect URL to authorize the Instagram connection.',
-            'redirect_url': state.redirect_url,
-            'session_id': state.session_id,
-            'connection_request_id': state.connection_request_id,
-        }
-
-    def publish_image(self, image_url: str, caption: str, instagram_user_id: str | None = None) -> dict[str, Any]:
-        if not image_url:
-            return {'status': 'dry_run', 'message': 'No image URL was supplied for publishing.'}
-        if not self.is_configured():
-            return {'status': 'missing_api_key', 'message': 'COMPOSIO_API_KEY is not configured'}
-
-        session = self._get_session()
-        if session is None:
-            auth_flow = self.start_auth_flow()
-            if auth_flow.get('status') == 'auth_started':
-                return {'status': 'not_authorized', 'message': 'Complete the Composio Instagram authorization flow and retry.', 'auth': auth_flow}
-            return auth_flow
-
-        try:
-            tools = session.tools()
-        except Exception as exc:  # pragma: no cover - optional dependency path
-            return {'status': 'error', 'message': str(exc)}
-
-        payload = {'caption': caption, 'image_url': image_url, 'ig_user_id': instagram_user_id}
-        for tool_name in (
-            'instagram_create_media',
-            'instagram_create_container',
-            'instagram_create_carousel_container',
-            'instagram_publish_media',
-            'instagram_post',
-        ):
-            try:
-                result = self._invoke_tool(tools, (tool_name,), payload)
-                return {'status': 'published', 'data': result}
-            except Exception:
-                continue
-
-        return {'status': 'unavailable', 'message': 'Composio did not expose a compatible Instagram publish tool in this environment.'}
-
     def publish_carousel(self, image_urls: list[str], caption: str, instagram_user_id: str | None = None) -> dict[str, Any]:
         if not image_urls:
             return {'status': 'dry_run', 'message': 'No image URLs were supplied for carousel publishing.'}
         if not self.is_configured():
             return {'status': 'missing_api_key', 'message': 'COMPOSIO_API_KEY is not configured'}
 
-        session = self._get_session()
+        try:
+            session = self._get_session()
+        except Exception as exc:  # pragma: no cover - optional dependency path
+            return {'status': 'error', 'message': str(exc)}
         if session is None:
-            auth_flow = self.start_auth_flow()
-            if auth_flow.get('status') == 'auth_started':
-                return {'status': 'not_authorized', 'message': 'Complete the Composio Instagram authorization flow and retry.', 'auth': auth_flow}
-            return auth_flow
+            return {
+                'status': 'not_authorized',
+                'message': "Composio SDK unavailable or Instagram not linked. Run 'composio link instagram' first.",
+            }
 
         try:
             tools = session.tools()
         except Exception as exc:  # pragma: no cover - optional dependency path
             return {'status': 'error', 'message': str(exc)}
 
-        payload = {'caption': caption, 'child_image_urls': image_urls, 'ig_user_id': instagram_user_id}
-        for tool_name in ('instagram_create_carousel_container', 'instagram_create_container', 'instagram_create_media'):
-            try:
-                result = self._invoke_tool(tools, (tool_name,), payload)
-                return {'status': 'published', 'data': result}
-            except Exception:
-                continue
+        container_payload = {'ig_user_id': instagram_user_id, 'caption': caption, 'child_image_urls': image_urls}
+        try:
+            # INSTAGRAM_CREATE_CAROUSEL_CONTAINER is the confirmed real Composio
+            # action name; the lowercase ones are kept only as a defensive
+            # fallback for older toolkit aliases.
+            container = self._invoke_tool(
+                tools,
+                ('INSTAGRAM_CREATE_CAROUSEL_CONTAINER', 'instagram_create_carousel_container', 'instagram_create_container'),
+                container_payload,
+            )
+        except Exception as exc:
+            return {'status': 'error', 'message': f'Failed to create carousel container: {exc}'}
 
-        return {'status': 'unavailable', 'message': 'Composio did not expose a compatible carousel publish tool in this environment.'}
+        creation_id = container.get('id') if isinstance(container, dict) else getattr(container, 'id', None)
+        if not creation_id:
+            return {'status': 'error', 'message': 'Carousel container created but no creation_id was returned.', 'data': container}
+
+        publish_payload = {'ig_user_id': instagram_user_id, 'creation_id': creation_id}
+        try:
+            publish_result = self._invoke_tool(
+                tools,
+                ('INSTAGRAM_POST_IG_USER_MEDIA_PUBLISH', 'instagram_publish_media', 'instagram_post'),
+                publish_payload,
+            )
+        except Exception as exc:
+            return {'status': 'error', 'message': f'Carousel container created but publish failed: {exc}', 'creation_id': creation_id}
+
+        return {'status': 'published', 'data': publish_result, 'creation_id': creation_id}

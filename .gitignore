@@ -8,7 +8,7 @@ __pycache__/
 .venv/
 out/
 .pytest_cache/
-.drive_auth.json
+output/
 
 data/drive_reviews.json
 

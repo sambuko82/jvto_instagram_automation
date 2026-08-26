@@ -8,21 +8,18 @@ from .config import load_settings
 from .drive_ingestion import DriveIngestion
 from .publisher import publish_to_instagram, upload_to_imgbb
 from .rendering import create_carousel
-from .review_parser import load_review_payload
+from .review_parser import build_caption, load_review_payload
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description='Generate reusable JVTO carousel cards')
     parser.add_argument('--local-json', default=None)
     parser.add_argument('--output-dir', default=None)
-    parser.add_argument('--file-id', default=None)
     parser.add_argument('--publish', action='store_true')
     parser.add_argument('--imgbb-key', default=None)
     parser.add_argument('--instagram-token', default=None)
     parser.add_argument('--instagram-user-id', default=None)
     parser.add_argument('--drive-export', action='store_true')
-    parser.add_argument('--oauth', action='store_true', help='Launch the Composio-based auth flow for Drive and Instagram')
-    parser.add_argument('--auth-provider', choices=['drive', 'instagram', 'all'], default='all', help='Which Composio connector to authorize')
     parser.add_argument('--agentic', action='store_true', help='Use LLM-based review-to-caption extraction when credentials are available')
     return parser
 
@@ -36,8 +33,6 @@ def main(argv: list[str] | None = None) -> int:
         settings.local_json = Path(args.local_json).resolve()
     if args.output_dir:
         settings.output_dir = Path(args.output_dir).resolve()
-    if args.file_id:
-        settings.file_id = args.file_id
     if args.publish:
         settings.publish = True
     if args.agentic:
@@ -49,56 +44,62 @@ def main(argv: list[str] | None = None) -> int:
     if args.instagram_user_id:
         settings.instagram_user_id = args.instagram_user_id
 
-    ingestion = DriveIngestion(
-        settings.drive_folder_id,
-        settings.drive_access_token,
-        settings.composio_api_key,
-        settings.composio_user_id,
-        settings.project_root,
-    )
-    publisher = ComposioPublisher(
-        settings.composio_api_key,
-        settings.composio_user_id,
-        settings.project_root,
-    )
-
-    if args.oauth:
-        if args.auth_provider in {'drive', 'all'}:
-            drive_result = ingestion.authorize()
-            print(drive_result.get('message', 'Composio Drive auth flow started'))
-        if args.auth_provider in {'instagram', 'all'}:
-            instagram_result = publisher.start_auth_flow()
-            print(instagram_result.get('message', 'Composio Instagram auth flow started'))
-
     if args.drive_export:
-        exported = ingestion.export_reviews_to_json(settings.project_root / 'data' / 'drive_reviews.json')
-        if exported:
-            print(f'Exported {len(exported)} review(s) from Drive to data/drive_reviews.json')
-            settings.local_json = settings.project_root / 'data' / 'drive_reviews.json'
+        ingestion = DriveIngestion(settings.drive_folder_id, settings.composio_api_key, settings.composio_user_id, settings.project_root)
+        if not ingestion.is_configured():
+            print(
+                "COMPOSIO_API_KEY is not set - skipping Drive export. "
+                "Run 'composio link googledrive' once, then set COMPOSIO_API_KEY, to enable this."
+            )
         else:
-            print('No reviews were returned from the Composio/Drive workflow. Falling back to the local sample input if available.')
+            try:
+                exported = ingestion.export_reviews_to_json(settings.project_root / 'data' / 'drive_reviews.json')
+            except Exception as exc:
+                print(f'Drive export failed: {exc}. Falling back to local sample input if available.')
+                exported = []
+            if exported:
+                print(f'Exported {len(exported)} review(s) from Drive to data/drive_reviews.json')
+                settings.local_json = settings.project_root / 'data' / 'drive_reviews.json'
+            else:
+                print('No reviews were returned from Drive. Falling back to the local sample input if available.')
 
-    payload = load_review_payload(settings)
+    try:
+        payload = load_review_payload(settings)
+    except ValueError as exc:
+        print(f'Error: {exc}')
+        return 1
+
     card_paths = create_carousel(payload, settings.output_dir)
-
     print(f'Generated {len(card_paths)} cards in {settings.output_dir}')
     for card_path in card_paths:
         print(card_path)
 
     if settings.publish:
-        img_url = None
-        if settings.imgbb_api_key:
-            img_url = upload_to_imgbb(card_paths[-1], settings.imgbb_api_key)
+        caption = build_caption(payload)
 
-        caption = f"{payload.narrative.guest_name} shares a JVTO story about {', '.join(payload.narrative.destinations)}."
-        if settings.composio_api_key:
-            publish_result = publisher.publish_image(img_url or '', caption, settings.instagram_user_id)
+        image_urls: list[str] = []
+        if settings.imgbb_api_key:
+            for card_path in card_paths:
+                try:
+                    url = upload_to_imgbb(card_path, settings.imgbb_api_key)
+                except Exception as exc:
+                    print(f'ImgBB upload failed for {card_path}: {exc}')
+                    url = None
+                if url:
+                    image_urls.append(url)
+
+        publish_result = None
+        if settings.composio_api_key and len(image_urls) == len(card_paths):
+            publisher = ComposioPublisher(settings.composio_api_key, settings.composio_user_id, settings.project_root)
+            publish_result = publisher.publish_carousel(image_urls, caption, settings.instagram_user_id)
             print({'composio_publish': publish_result})
-        if not settings.composio_api_key or publish_result.get('status') in {'missing_api_key', 'unavailable', 'not_authorized', 'error'}:
-            if settings.instagram_access_token and settings.instagram_user_id:
-                publish_result = publish_to_instagram(img_url or '', caption, settings.instagram_access_token, settings.instagram_user_id)
-                print({'manual_publish': publish_result})
-            else:
-                print('Instagram publishing skipped because Composio and direct token credentials are not configured.')
+
+        needs_manual_fallback = publish_result is None or publish_result.get('status') in {'missing_api_key', 'not_authorized', 'error'}
+        if needs_manual_fallback:
+            if settings.instagram_access_token and settings.instagram_user_id and image_urls:
+                manual_result = publish_to_instagram(image_urls[-1], caption, settings.instagram_access_token, settings.instagram_user_id)
+                print({'manual_publish': manual_result})
+            elif publish_result is None:
+                print('Instagram publishing skipped: no Composio API key, no ImgBB key, or uploads incomplete.')
 
     return 0
