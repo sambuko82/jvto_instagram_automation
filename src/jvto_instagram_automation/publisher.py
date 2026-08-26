@@ -20,17 +20,22 @@ def upload_to_imgbb(image_path: Path, api_key: str | None) -> str | None:
 def publish_to_instagram(image_url: str, caption: str, access_token: str | None, instagram_user_id: str | None) -> dict[str, Any]:
     if not access_token or not instagram_user_id:
         return {'status': 'dry_run', 'message': 'Set INSTAGRAM_ACCESS_TOKEN and INSTAGRAM_USER_ID to publish to Instagram.'}
+    # Token goes in the Authorization header rather than the query string so
+    # it doesn't end up logged verbatim in proxy/access logs.
+    headers = {'Authorization': f'Bearer {access_token}'}
     try:
         media_response = requests.post(
             f'https://graph.facebook.com/v20.0/{instagram_user_id}/media',
-            params={'access_token': access_token, 'image_url': image_url, 'caption': caption},
+            params={'image_url': image_url, 'caption': caption},
+            headers=headers,
             timeout=60,
         )
         media_response.raise_for_status()
         media_id = media_response.json().get('id')
         publish_response = requests.post(
             f'https://graph.facebook.com/v20.0/{instagram_user_id}/media_publish',
-            params={'access_token': access_token, 'creation_id': media_id},
+            params={'creation_id': media_id},
+            headers=headers,
             timeout=60,
         )
         publish_response.raise_for_status()

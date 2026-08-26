@@ -7,7 +7,10 @@ name = "jvto-instagram-automation"
 version = "0.1.0"
 description = "Reusable JVTO Instagram carousel generator"
 requires-python = ">=3.10"
-dependencies = ["Pillow>=10.0", "requests>=2.31"]
+dependencies = ["Pillow>=10.1", "requests>=2.31", "qrcode>=7.4"]
+
+[project.optional-dependencies]
+composio = ["composio>=0.1.0", "composio-openai-agents>=0.1.0", "openai-agents>=0.1.0"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

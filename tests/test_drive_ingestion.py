@@ -1,22 +1,22 @@
 import json
-import tempfile
-from pathlib import Path
 
-from jvto_instagram_automation.drive_ingestion import ComposioConnector, DriveAuthState
+from jvto_instagram_automation.drive_ingestion import ComposioConnector
 
 
-def test_auth_state_round_trip() -> None:
-    with tempfile.TemporaryDirectory() as tmp_dir:
-        state_path = Path(tmp_dir) / '.drive_auth.json'
-        connector = ComposioConnector(api_key='test-key', project_root=Path(tmp_dir))
-        connector.state_path = state_path
-        state = DriveAuthState(session_id='abc', connection_request_id='req-1', redirect_url='https://example.test/auth', folder_name='JVTO Reviews')
-        connector.save_state(state)
-        loaded = connector.load_state()
+def test_coerce_file_items_supports_multiple_shapes() -> None:
+    connector = ComposioConnector(api_key='test-key')
+    assert connector._coerce_file_items([{'id': '1'}]) == [{'id': '1'}]
+    assert connector._coerce_file_items({'files': [{'id': '2'}]}) == [{'id': '2'}]
+    assert connector._coerce_file_items({'file': {'id': '3'}}) == [{'id': '3'}]
+    assert connector._coerce_file_items({'unrelated': 'value'}) == []
 
-        assert loaded is not None
-        assert loaded.session_id == 'abc'
-        assert loaded.folder_name == 'JVTO Reviews'
+
+def test_looks_like_review_file() -> None:
+    connector = ComposioConnector(api_key='test-key')
+    assert connector._looks_like_review_file('review-123.json') is True
+    assert connector._looks_like_review_file('reviews.csv') is True
+    assert connector._looks_like_review_file('random.pdf') is False
+    assert connector._looks_like_review_file(None) is False
 
 
 def test_parse_drive_review_payload_supports_reviews_array() -> None:
@@ -27,3 +27,33 @@ def test_parse_drive_review_payload_supports_reviews_array() -> None:
 
     assert len(parsed) == 1
     assert parsed[0]['comment'] == 'Amazing trip'
+
+
+def test_invoke_tool_tries_real_action_name_before_fallback_aliases() -> None:
+    connector = ComposioConnector(api_key='test-key')
+    calls = []
+
+    class FakeTools:
+        def execute(self, tool_name, kwargs):
+            calls.append(tool_name)
+            if tool_name != 'GOOGLEDRIVE_LIST_FILES':
+                raise RuntimeError('not this one')
+            return {'files': [{'id': 'abc'}]}
+
+    result = connector._invoke_tool(
+        FakeTools(),
+        ('GOOGLEDRIVE_LIST_FILES', 'googledrive_search_files', 'googledrive_list_files'),
+        {'folder_id': 'x'},
+    )
+
+    assert result == {'files': [{'id': 'abc'}]}
+    assert calls[0] == 'GOOGLEDRIVE_LIST_FILES'
+
+
+def test_no_local_auth_state_file_is_created() -> None:
+    # Regression guard: the old DIY OAuth-state approach wrote a JSON file
+    # that wasn't reliably gitignored. Auth is Composio-CLI-managed now, so
+    # no such attribute/file should exist at all.
+    connector = ComposioConnector(api_key='test-key')
+    assert not hasattr(connector, 'state_path')
+    assert not hasattr(connector, 'save_state')
