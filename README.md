@@ -64,6 +64,14 @@ If Composio is not configured yet, the workflow still works with the local sampl
 (with a small bonus for reviews that carry their own `reviewReplyUrl`), so
 well-photographed, verifiable reviews are posted before plainer ones.
 
+## Posting the next review
+Each successful `--publish` run records the posted review's ID in
+`data/posted_history.json` (gitignored - it's per-deployment state, not
+source), so the next run automatically skips it and picks the next
+best-ranked, not-yet-posted review instead of reposting the same one. To
+intentionally allow a repost, delete that review's ID from the file (or
+delete the whole file to reset history).
+
 ## Agentic review extraction
 If you want richer, context-mapped social captions and visual prompts, enable the agentic mode:
 

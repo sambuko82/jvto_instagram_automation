@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 from .agentic_extraction import extract_narrative_agentic
@@ -48,16 +49,60 @@ def _review_url(review: dict[str, Any]) -> str | None:
     return review.get('reviewReplyUrl') or review.get('review_url') or review.get('url') or None
 
 
-def get_priority_reviews(reviews: list[dict[str, Any]], limit: int = 5) -> list[dict[str, Any]]:
+def _review_id(review: dict[str, Any]) -> str | None:
+    return review.get('reviewId') or review.get('review_id') or review.get('id') or None
+
+
+def _posted_history_path(settings: Settings) -> Path:
+    return settings.project_root / 'data' / 'posted_history.json'
+
+
+def load_posted_review_ids(path: Path) -> set[str]:
+    if not path.exists():
+        return set()
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except (json.JSONDecodeError, OSError):
+        return set()
+    ids = data.get('posted_review_ids') if isinstance(data, dict) else None
+    return set(ids) if isinstance(ids, list) else set()
+
+
+def record_posted_review(path: Path, review_id: str | None) -> None:
+    if not review_id:
+        return
+    ids = load_posted_review_ids(path)
+    ids.add(review_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({'posted_review_ids': sorted(ids)}, indent=2), encoding='utf-8')
+
+
+def record_posted_review_from_payload(settings: Settings, payload: ReviewPayload) -> None:
+    """Mark payload's underlying review as posted so future --publish runs skip it."""
+    review_id = _review_id(payload.original) if isinstance(payload.original, dict) else None
+    record_posted_review(_posted_history_path(settings), review_id)
+
+
+def get_priority_reviews(
+    reviews: list[dict[str, Any]],
+    limit: int = 5,
+    exclude_ids: set[str] | None = None,
+) -> list[dict[str, Any]]:
     """Rank 5-star reviews by media asset count (richest documentation first).
 
     A review's score is media_count-weighted with a small bonus for carrying
     its own authentic reviewReplyUrl, so well-photographed AND verifiable
-    reviews are prioritized for posting.
+    reviews are prioritized for posting. exclude_ids skips reviews already
+    posted (see posted_history in load_review_payload), so repeated runs
+    work through the backlog instead of reposting the same top review.
     """
+    exclude_ids = exclude_ids or set()
     scored = []
     for review in reviews:
         if not isinstance(review, dict) or not _review_is_five_star(review):
+            continue
+        review_id = _review_id(review)
+        if review_id is not None and review_id in exclude_ids:
             continue
         media_count = _review_media_count(review)
         has_url = bool(_review_url(review))
@@ -211,8 +256,18 @@ def load_review_payload(settings: Settings) -> ReviewPayload:
             'or ensure data/sample_review.json exists.'
         )
 
-    priority = get_priority_reviews(reviews, limit=settings.review_priority_limit)
-    first = priority[0] if priority else reviews[0]
+    posted_ids = load_posted_review_ids(_posted_history_path(settings))
+    priority = get_priority_reviews(reviews, limit=settings.review_priority_limit, exclude_ids=posted_ids)
+    if priority:
+        first = priority[0]
+    else:
+        unposted = [r for r in reviews if isinstance(r, dict) and _review_id(r) not in posted_ids]
+        if not unposted:
+            raise ValueError(
+                'No unposted reviews left - every review in the input has already been posted. '
+                'Run --drive-export to pull in new reviews, or clear data/posted_history.json to allow reposting.'
+            )
+        first = unposted[0]
 
     review_text = first.get('comment') or first.get('text') or first.get('reviewText') or ''
     reviewer = first.get('reviewer') or {}

@@ -8,7 +8,7 @@ from .config import load_settings
 from .drive_ingestion import DriveIngestion
 from .publisher import publish_to_instagram, upload_to_imgbb
 from .rendering import create_carousel
-from .review_parser import build_caption, load_review_payload
+from .review_parser import build_caption, load_review_payload, record_posted_review_from_payload
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -95,11 +95,18 @@ def main(argv: list[str] | None = None) -> int:
             print({'composio_publish': publish_result})
 
         needs_manual_fallback = publish_result is None or publish_result.get('status') in {'missing_api_key', 'not_authorized', 'error'}
+        manual_result = None
         if needs_manual_fallback:
             if settings.instagram_access_token and settings.instagram_user_id and image_urls:
                 manual_result = publish_to_instagram(image_urls[-1], caption, settings.instagram_access_token, settings.instagram_user_id)
                 print({'manual_publish': manual_result})
             elif publish_result is None:
                 print('Instagram publishing skipped: no Composio API key, no ImgBB key, or uploads incomplete.')
+
+        published = (publish_result or {}).get('status') == 'published' or (manual_result or {}).get('status') == 'published'
+        if published:
+            # So the next --publish run skips this review instead of picking
+            # the same top-ranked one again.
+            record_posted_review_from_payload(settings, payload)
 
     return 0

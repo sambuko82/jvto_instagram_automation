@@ -11,5 +11,6 @@ out/
 output/
 
 data/drive_reviews.json
+data/posted_history.json
 
 src/jvto_instagram_automation.egg-info/
