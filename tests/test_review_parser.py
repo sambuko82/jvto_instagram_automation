@@ -1,7 +1,15 @@
+import tempfile
 import unittest
+from pathlib import Path
 
 from jvto_instagram_automation.models import Narrative, ReviewPayload
-from jvto_instagram_automation.review_parser import build_caption, extract_narrative, get_priority_reviews
+from jvto_instagram_automation.review_parser import (
+    build_caption,
+    extract_narrative,
+    get_priority_reviews,
+    load_posted_review_ids,
+    record_posted_review,
+)
 
 
 class ReviewParserTests(unittest.TestCase):
@@ -44,6 +52,32 @@ class GetPriorityReviewsTests(unittest.TestCase):
         reviews = [{'comment': f'review {i}', 'reviewMediaItems': [{}] * i} for i in range(10)]
         ranked = get_priority_reviews(reviews, limit=3)
         self.assertEqual(len(ranked), 3)
+
+    def test_excludes_already_posted_reviews(self) -> None:
+        reviews = [
+            {'reviewId': 'r1', 'comment': 'best', 'reviewMediaItems': [{}, {}, {}]},
+            {'reviewId': 'r2', 'comment': 'second best', 'reviewMediaItems': [{}]},
+        ]
+        ranked = get_priority_reviews(reviews, limit=5, exclude_ids={'r1'})
+        self.assertEqual(len(ranked), 1)
+        self.assertEqual(ranked[0]['comment'], 'second best')
+
+
+class PostedHistoryTests(unittest.TestCase):
+    def test_record_then_load_round_trips(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'posted_history.json'
+            self.assertEqual(load_posted_review_ids(path), set())
+            record_posted_review(path, 'abc123')
+            self.assertEqual(load_posted_review_ids(path), {'abc123'})
+            record_posted_review(path, 'def456')
+            self.assertEqual(load_posted_review_ids(path), {'abc123', 'def456'})
+
+    def test_missing_review_id_is_a_no_op(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'posted_history.json'
+            record_posted_review(path, None)
+            self.assertFalse(path.exists())
 
 
 class BuildCaptionTests(unittest.TestCase):
