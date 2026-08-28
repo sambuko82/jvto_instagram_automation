@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 import platform
+import re
 from io import BytesIO
 from pathlib import Path
 
@@ -9,6 +10,24 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 
 from .models import ReviewPayload
+
+# Emoji/pictograph ranges the bundled TrueType fonts (Arial, DejaVu,
+# Liberation) don't cover - a missing glyph renders as a tofu box, so strip
+# these before drawing rather than showing broken boxes in review quotes.
+_UNSUPPORTED_GLYPHS = re.compile(
+    '['
+    '\U0001F000-\U0001FFFF'
+    '\U00002600-\U000027BF'
+    '\U0001F1E6-\U0001F1FF'
+    '\U00002B00-\U00002BFF'
+    '\U0000FE00-\U0000FE0F'
+    '\U0000200D'
+    ']+'
+)
+
+
+def _sanitize_for_image_text(text: str) -> str:
+    return _UNSUPPORTED_GLYPHS.sub('', text)
 
 CANVAS_W = 1080
 CANVAS_H = 1350
@@ -86,7 +105,7 @@ def _wrap_text(draw: ImageDraw.ImageDraw, text: str, w: int, font: ImageFont.Ima
 
 
 def _draw_text_box(draw: ImageDraw.ImageDraw, text: str, x: int, y: int, w: int, h: int, font: ImageFont.ImageFont, fill: str, align: str = 'left') -> None:
-    lines = _wrap_text(draw, text, w, font)
+    lines = _wrap_text(draw, _sanitize_for_image_text(text), w, font)
     line_height = max(24, int(font.getbbox('Ag')[3] * 1.15))
     total_height = len(lines) * line_height
     start_y = y + max(0, (h - total_height) // 2)
@@ -100,6 +119,24 @@ def _draw_text_box(draw: ImageDraw.ImageDraw, text: str, x: int, y: int, w: int,
         else:
             text_x = x
         draw.text((text_x, start_y + index * line_height), line, font=font, fill=fill)
+
+
+def _truncate_to_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, max_w: int) -> str:
+    """Fit unbreakable single-line text (e.g. a URL) into max_w, adding an
+    ellipsis if needed. _wrap_text can't help here since it only breaks on
+    spaces, and a URL has none - without this it just overflows the canvas.
+    """
+    if draw.textbbox((0, 0), text, font=font)[2] <= max_w:
+        return text
+    lo, hi = 0, len(text)
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        candidate = text[:mid] + '…'
+        if draw.textbbox((0, 0), candidate, font=font)[2] <= max_w:
+            lo = mid
+        else:
+            hi = mid - 1
+    return text[:lo] + '…'
 
 
 def _star_points(cx: float, cy: float, outer_r: float, inner_r: float) -> list[tuple[float, float]]:
@@ -269,40 +306,162 @@ def build_card_3(payload: ReviewPayload, output_path: Path) -> None:
     image.save(output_path)
 
 
+GUEST_TYPE_LABELS = {
+    'solo': 'SOLO TRAVELER',
+    'couple': 'COUPLE',
+    'family': 'FAMILY',
+    'friends': 'FRIENDS',
+    'honeymoon': 'HONEYMOON',
+}
+
+
+def _format_guest_type(guest_type: str) -> str:
+    return GUEST_TYPE_LABELS.get(guest_type, guest_type.upper())
+
+
+def _avatar_initials(guest_name: str) -> str:
+    words = [w for w in guest_name.split() if w]
+    if not words:
+        return '?'
+    if len(words) == 1:
+        return words[0][:2].upper()
+    return (words[0][0] + words[-1][0]).upper()
+
+
+def _circular_mask(size: int) -> Image.Image:
+    mask = Image.new('L', (size, size), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size, size), fill=255)
+    return mask
+
+
+def _load_avatar(profile_photo_url: str | None, guest_name: str, diameter: int) -> Image.Image:
+    """A circular avatar: the reviewer's real Google profile photo when
+    Google exposed one, otherwise a plain initials avatar in the same spot.
+    Never invents a photo that isn't in the source data.
+    """
+    if profile_photo_url:
+        try:
+            url = profile_photo_url
+            if 'googleusercontent.com' in url:
+                # Google's own profile-photo size suffix defaults small;
+                # request a square at 2x the render size instead of
+                # upscaling a low-res thumbnail.
+                url = f"{url.split('=')[0]}=s{diameter * 2}-c"
+            response = requests.get(url, timeout=15)
+            response.raise_for_status()
+            photo = Image.open(BytesIO(response.content)).convert('RGB')
+            side = min(photo.size)
+            left = (photo.width - side) // 2
+            top = (photo.height - side) // 2
+            photo = photo.crop((left, top, left + side, top + side)).resize((diameter, diameter), Image.LANCZOS)
+            avatar = Image.new('RGBA', (diameter, diameter))
+            avatar.paste(photo, (0, 0))
+            avatar.putalpha(_circular_mask(diameter))
+            return avatar
+        except Exception:
+            pass
+
+    avatar = Image.new('RGBA', (diameter, diameter), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(avatar)
+    draw.ellipse((0, 0, diameter, diameter), fill=(214, 235, 224, 255))
+    initials = _avatar_initials(guest_name)
+    font = _load_font(int(diameter * 0.36), bold=True)
+    bbox = draw.textbbox((0, 0), initials, font=font)
+    text_w, text_h = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(
+        ((diameter - text_w) / 2 - bbox[0], (diameter - text_h) / 2 - bbox[1]),
+        initials,
+        font=font,
+        fill=(27, 67, 50, 255),
+    )
+    return avatar
+
+
+def _draw_quote_mark(draw: ImageDraw.ImageDraw, x: int, y: int, size: int, fill: str) -> None:
+    # Two comma-shaped glyphs rather than a “/❝ font character - not every
+    # bundled TrueType font ships one, and a missing glyph renders as an
+    # empty tofu box (same reasoning as the vector star rating above).
+    comma_r = size * 0.28
+    for i in range(2):
+        cx = x + i * (size * 0.55) + comma_r
+        cy = y + comma_r
+        draw.ellipse((cx - comma_r, cy - comma_r, cx + comma_r, cy + comma_r), fill=fill)
+        tail = [
+            (cx - comma_r * 0.9, cy + comma_r * 0.2),
+            (cx + comma_r * 0.2, cy + comma_r * 0.2),
+            (cx - comma_r * 0.5, cy + comma_r * 1.9),
+        ]
+        draw.polygon(tail, fill=fill)
+
+
+def _draw_mountain_mark(draw: ImageDraw.ImageDraw, x: int, y: int, size: int, fill: str) -> None:
+    draw.polygon([(x, y + size), (x + size / 2, y), (x + size, y + size)], fill=fill)
+
+
 def build_card_4(payload: ReviewPayload, output_path: Path) -> None:
+    """The testimonial card, styled like a Google Reviews screenshot: real
+    star rating, the reviewer's own Google profile photo (or an initials
+    avatar when Google didn't expose one), their quote, and a working QR
+    code back to the real review - never a fabricated link or photo.
+    """
     narrative = payload.narrative
-    image = Image.new('RGB', (CANVAS_W, CANVAS_H), (248, 248, 248))
+    deep_green = '#1b4332'
+    gold = '#f5b700'
+    google_blue = '#4285f4'
+
+    image = Image.new('RGB', (CANVAS_W, CANVAS_H), '#f5f6f4')
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((40, 40, CANVAS_W - 40, CANVAS_H - 40), radius=36, fill=(255, 255, 255), outline=(220, 220, 220))
 
-    quote_font = _load_font(32)
-    attrib_font = _load_font(24)
-    logo_font = _load_font(24, bold=True)
-    micro_font = _load_font(18)
+    g_font = _load_font(46, bold=True)
+    brand_font = _load_font(40, bold=True)
+    draw.text((int(CANVAS_W * 0.08), int(CANVAS_H * 0.055)), 'G', font=g_font, fill=google_blue)
+    g_bbox = draw.textbbox((0, 0), 'G', font=g_font)
+    draw.text(
+        (int(CANVAS_W * 0.08) + (g_bbox[2] - g_bbox[0]) + 14, int(CANVAS_H * 0.06)),
+        'Google reviews',
+        font=brand_font,
+        fill='#3c4043',
+    )
+    _draw_star_rating(draw, int(CANVAS_W * 0.08) + 100, int(CANVAS_H * 0.145), gap=10, size=32, fill=gold)
 
-    _draw_text_box(draw, f'"{narrative.quote_short}"', int(CANVAS_W * 0.10), int(CANVAS_H * 0.30), int(CANVAS_W * 0.80), int(CANVAS_H * 0.42), quote_font, '#2b2b2b')
-    _draw_star_rating(draw, int(CANVAS_W * 0.50), int(CANVAS_H * 0.18))
-    attribution = f"— {narrative.guest_name} • {narrative.guest_type.title()}"
-    _draw_text_box(draw, attribution, int(CANVAS_W * 0.50), int(CANVAS_H * 0.78), int(CANVAS_W * 0.40), int(CANVAS_H * 0.06), attrib_font, '#555555', align='center')
-    _draw_text_box(draw, 'JVTO', int(CANVAS_W * 0.50), int(CANVAS_H * 0.92), int(CANVAS_W * 0.20), int(CANVAS_H * 0.04), logo_font, '#0f5f78', align='center')
+    avatar_d = 220
+    avatar_cx, avatar_cy = int(CANVAS_W * 0.78), int(CANVAS_H * 0.18)
+    avatar = _load_avatar(narrative.profile_photo_url, narrative.guest_name, avatar_d)
+    image.paste(avatar, (avatar_cx - avatar_d // 2, avatar_cy - avatar_d // 2), avatar)
 
-    # Plain text, no emoji: not every bundled font has emoji glyphs, and a
-    # missing glyph renders as a tofu box (see _draw_star_rating above).
-    if narrative.review_url_kind == 'specific':
-        link_note = 'Full review link in caption & our Linktree bio'
-    elif narrative.review_url_kind == 'profile':
-        link_note = 'See more verified reviews in our Linktree bio'
-    else:
-        link_note = None
+    card_box = (int(CANVAS_W * 0.05), int(CANVAS_H * 0.23), int(CANVAS_W * 0.95), int(CANVAS_H * 0.82))
+    draw.rounded_rectangle(card_box, radius=36, fill='white', outline='#e4e4e4')
+
+    _draw_quote_mark(draw, int(CANVAS_W * 0.09), int(CANVAS_H * 0.27), 64, gold)
+
+    headline = f"{narrative.guest_name.upper()} · {_format_guest_type(narrative.guest_type)}"
+    headline_font = _load_font(40, bold=True)
+    _draw_text_box(draw, headline, int(CANVAS_W * 0.09), int(CANVAS_H * 0.38), int(CANVAS_W * 0.82), int(CANVAS_H * 0.08), headline_font, deep_green)
+
+    quote_font = _load_font(28)
+    _draw_text_box(draw, narrative.quote_full or narrative.quote_short, int(CANVAS_W * 0.09), int(CANVAS_H * 0.46), int(CANVAS_W * 0.70), int(CANVAS_H * 0.32), quote_font, '#4a4a4a')
+
+    footer_top = int(CANVAS_H * 0.84)
+    draw.rectangle((0, footer_top, CANVAS_W, CANVAS_H), fill=deep_green)
+    _draw_mountain_mark(draw, int(CANVAS_W * 0.08), footer_top + int(CANVAS_H * 0.015), 30, gold)
+    brand_lines_font = _load_font(26, bold=True)
+    draw.text((int(CANVAS_W * 0.08) + 40, footer_top + int(CANVAS_H * 0.008)), 'JAVA VOLCANO', font=brand_lines_font, fill='white')
+    draw.text((int(CANVAS_W * 0.08) + 40, footer_top + int(CANVAS_H * 0.008) + 30), 'TOUR OPERATOR', font=brand_lines_font, fill='white')
+
+    url_font = _load_font(20)
+    if narrative.review_url_kind != 'none' and narrative.review_url:
+        url_max_w = int(CANVAS_W * 0.62)
+        url_text = _truncate_to_width(draw, narrative.review_url, url_font, url_max_w)
+        draw.text((int(CANVAS_W * 0.08), footer_top + int(CANVAS_H * 0.075)), url_text, font=url_font, fill='#cfe3d8')
 
     qr_overlay = _make_qr_overlay(narrative.review_url if narrative.review_url_kind != 'none' else None)
-    if link_note:
-        text_w = int(CANVAS_W * 0.60) if qr_overlay else int(CANVAS_W * 0.88)
-        _draw_text_box(draw, link_note, int(CANVAS_W * 0.06), int(CANVAS_H * 0.955), text_w, int(CANVAS_H * 0.03), micro_font, '#777777')
     if qr_overlay:
-        qr_size = 130
-        qr_overlay = qr_overlay.resize((qr_size, qr_size))
-        image.paste(qr_overlay, (CANVAS_W - qr_size - 60, CANVAS_H - qr_size - 60))
+        qr_size = 110
+        qr_x, qr_y = CANVAS_W - qr_size - int(CANVAS_W * 0.08), footer_top + int(CANVAS_H * 0.01)
+        draw.rectangle((qr_x - 8, qr_y - 8, qr_x + qr_size + 8, qr_y + qr_size + 8), fill='white')
+        image.paste(qr_overlay.resize((qr_size, qr_size)), (qr_x, qr_y))
+        caption_font = _load_font(16)
+        _draw_text_box(draw, 'Scan for review', qr_x - 20, qr_y + qr_size + 12, qr_size + 40, int(CANVAS_H * 0.03), caption_font, '#cfe3d8', align='center')
 
     image.save(output_path)
 
