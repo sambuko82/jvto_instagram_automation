@@ -274,6 +274,7 @@ def load_review_payload(settings: Settings) -> ReviewPayload:
     guest_name = reviewer.get('displayName') or reviewer.get('name') or first.get('reviewerName') or first.get('authorName') or 'Guest'
     narrative = extract_narrative_with_agentic(review_text, guest_name=guest_name, settings=settings)
 
+    narrative.profile_photo_url = reviewer.get('profilePhotoUrl') or None
     narrative.media_count = _review_media_count(first)
     review_url = _review_url(first)
     if review_url:
