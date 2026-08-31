@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from .composio_publisher import ComposioPublisher
@@ -26,7 +27,39 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_post_trip(settings, force: bool) -> int:
+def _mark_uploaded_with_retry(queue, row, now, attempts: int = 3, backoff_seconds: float = 1.0) -> bool:
+    """Retries `queue.mark_uploaded` a bounded number of times.
+
+    This only runs after `publish_carousel` has already succeeded. If the
+    BATCH_UPDATE that records that keeps failing, the trip stays 'pending' in
+    the sheet and the next cron run would post the same carousel to the real
+    Instagram account a second time - unlike every other failure in this
+    command, that one isn't fixed by just re-running. A transient blip
+    (network error, Composio 5xx) is the common case, so a short bounded
+    retry turns it into a non-event; only the marking is retried, never the
+    publish itself.
+    """
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            queue.mark_uploaded(row, now)
+            return True
+        except Exception as exc:  # noqa: BLE001 - any failure here is retried, then reported
+            last_exc = exc
+            if attempt < attempts:
+                time.sleep(backoff_seconds)
+
+    print(
+        f'{row.booking_id} WAS PUBLISHED to Instagram, but marking sheet row {row.row_number} '
+        f'as uploaded failed {attempts} times in a row: {last_exc}. '
+        f'Set row {row.row_number}\'s "Is Uploaded" to TRUE by hand before the next run, '
+        'or this trip will be posted to Instagram again.'
+    )
+    return False
+
+
+def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
     from datetime import datetime, timezone
 
     from .sheet_queue import SheetQueue, days_since_last_upload, next_pending
@@ -35,12 +68,13 @@ def run_post_trip(settings, force: bool) -> int:
         print('COMPOSIO_API_KEY and TRIP_PHOTO_SPREADSHEET_ID are both required for --post-trip.')
         return 1
 
-    queue = SheetQueue(
-        settings.composio_api_key,
-        settings.composio_user_id or 'jvto_automation',
-        settings.trip_photo_spreadsheet_id,
-        settings.trip_photo_sheet_name,
-    )
+    if queue is None:
+        queue = SheetQueue(
+            settings.composio_api_key,
+            settings.composio_user_id or 'jvto_automation',
+            settings.trip_photo_spreadsheet_id,
+            settings.trip_photo_sheet_name,
+        )
 
     rows = queue.fetch_rows()
     now = datetime.now(timezone.utc)
@@ -59,14 +93,17 @@ def run_post_trip(settings, force: bool) -> int:
 
     print(f'Publishing {row.booking_id} ({len(row.photo_urls)} photos) from sheet row {row.row_number}')
 
-    publisher = ComposioPublisher(settings.composio_api_key, settings.composio_user_id)
+    if publisher is None:
+        publisher = ComposioPublisher(settings.composio_api_key, settings.composio_user_id)
     result = publisher.publish_carousel(row.photo_urls, row.caption, settings.instagram_user_id)
 
     if result.get('status') != 'published':
         print(f"Publish failed: {result.get('status')} - {result.get('message')}")
         return 1
 
-    queue.mark_uploaded(row, now)
+    if not _mark_uploaded_with_retry(queue, row, now):
+        return 1
+
     print(f'Published {row.booking_id} and marked row {row.row_number} as uploaded.')
     return 0
 

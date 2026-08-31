@@ -64,5 +64,5 @@ def load_settings() -> Settings:
         google_maps_profile_url=os.getenv('JVTO_GOOGLE_MAPS_PROFILE_URL') or 'https://g.page/r/Cf9pQvQqZvQZEBM/review',
         trip_photo_spreadsheet_id=os.getenv('TRIP_PHOTO_SPREADSHEET_ID') or None,
         trip_photo_sheet_name=os.getenv('TRIP_PHOTO_SHEET_NAME', 'Sheet1'),
-        trip_post_interval_days=int(os.getenv('TRIP_POST_INTERVAL_DAYS', '4')),
+        trip_post_interval_days=int(os.getenv('TRIP_POST_INTERVAL_DAYS') or '4'),
     )
