@@ -1,0 +1,52 @@
+name: Post trip photos to Instagram
+
+on:
+  schedule:
+    # Daily at 02:00 UTC (09:00 WIB). The four-day spacing is enforced in
+    # --post-trip against the sheet's Uploaded At column, not by this cron:
+    # a '*/4' day-of-month expression resets at each month boundary, so
+    # 29 Jan to 1 Feb would be three days apart. Running daily and gating on
+    # real timestamps also means a run lost to an outage is picked up the
+    # next day rather than slipping a whole cycle.
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Post now, ignoring the four-day gate'
+        type: boolean
+        default: false
+
+# A manual workflow_dispatch overlapping the 02:00 UTC schedule would let two
+# runs read the same pending sheet row before either marks it, publishing the
+# same trip to the real business Instagram account twice. Queue the second
+# run instead of cancelling the first: cancel-in-progress is deliberately
+# off, because a run killed between publish_carousel succeeding and the row
+# being marked leaves exactly that duplicate-post state - cancelling would
+# just move the race into the workflow runner instead of removing it.
+concurrency:
+  group: post-trip-photos
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install
+        run: pip install -e ".[composio]"
+
+      - name: Publish the next queued trip
+        env:
+          COMPOSIO_API_KEY: ${{ secrets.COMPOSIO_API_KEY }}
+          COMPOSIO_USER_ID: ${{ secrets.COMPOSIO_USER_ID }}
+          INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
+          TRIP_PHOTO_SPREADSHEET_ID: ${{ secrets.TRIP_PHOTO_SPREADSHEET_ID }}
+          TRIP_PHOTO_SHEET_NAME: Sheet1
+          TRIP_POST_INTERVAL_DAYS: '4'
+        run: |
+          python -m jvto_instagram_automation --post-trip ${{ inputs.force && '--force' || '' }}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import time
 from pathlib import Path
 
 from .composio_publisher import ComposioPublisher
@@ -21,7 +22,90 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--instagram-user-id', default=None)
     parser.add_argument('--drive-export', action='store_true')
     parser.add_argument('--agentic', action='store_true', help='Use LLM-based review-to-caption extraction when credentials are available')
+    parser.add_argument('--post-trip', action='store_true', help='Publish the next pending trip photo row from the spreadsheet')
+    parser.add_argument('--force', action='store_true', help='Ignore the interval gate and post now')
     return parser
+
+
+def _mark_uploaded_with_retry(queue, row, now, attempts: int = 3, backoff_seconds: float = 1.0) -> bool:
+    """Retries `queue.mark_uploaded` a bounded number of times.
+
+    This only runs after `publish_carousel` has already succeeded. If the
+    BATCH_UPDATE that records that keeps failing, the trip stays 'pending' in
+    the sheet and the next cron run would post the same carousel to the real
+    Instagram account a second time - unlike every other failure in this
+    command, that one isn't fixed by just re-running. A transient blip
+    (network error, Composio 5xx) is the common case, so a short bounded
+    retry turns it into a non-event; only the marking is retried, never the
+    publish itself.
+    """
+    last_exc: Exception | None = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            queue.mark_uploaded(row, now)
+            return True
+        except Exception as exc:  # noqa: BLE001 - any failure here is retried, then reported
+            last_exc = exc
+            if attempt < attempts:
+                time.sleep(backoff_seconds)
+
+    print(
+        f'{row.booking_id} WAS PUBLISHED to Instagram, but marking sheet row {row.row_number} '
+        f'as uploaded failed {attempts} times in a row: {last_exc}. '
+        f'Set row {row.row_number}\'s "Is Uploaded" to TRUE by hand before the next run, '
+        'or this trip will be posted to Instagram again.'
+    )
+    return False
+
+
+def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
+    from datetime import datetime, timezone
+
+    from .sheet_queue import SheetQueue, days_since_last_upload, next_pending
+
+    if not settings.composio_api_key or not settings.trip_photo_spreadsheet_id:
+        print('COMPOSIO_API_KEY and TRIP_PHOTO_SPREADSHEET_ID are both required for --post-trip.')
+        return 1
+
+    if queue is None:
+        queue = SheetQueue(
+            settings.composio_api_key,
+            settings.composio_user_id or 'jvto_automation',
+            settings.trip_photo_spreadsheet_id,
+            settings.trip_photo_sheet_name,
+        )
+
+    rows = queue.fetch_rows()
+    now = datetime.now(timezone.utc)
+
+    # The cron runs daily and this gate enforces the real spacing, so a run lost
+    # to an outage is picked up the next day instead of slipping a full cycle.
+    elapsed = days_since_last_upload(rows, now)
+    if not force and elapsed is not None and elapsed < settings.trip_post_interval_days:
+        print(f'Last post was {elapsed:.1f} days ago; waiting for {settings.trip_post_interval_days}. Nothing to do.')
+        return 0
+
+    row = next_pending(rows)
+    if row is None:
+        print('No pending trip photo rows. Nothing to do.')
+        return 0
+
+    print(f'Publishing {row.booking_id} ({len(row.photo_urls)} photos) from sheet row {row.row_number}')
+
+    if publisher is None:
+        publisher = ComposioPublisher(settings.composio_api_key, settings.composio_user_id)
+    result = publisher.publish_carousel(row.photo_urls, row.caption, settings.instagram_user_id)
+
+    if result.get('status') != 'published':
+        print(f"Publish failed: {result.get('status')} - {result.get('message')}")
+        return 1
+
+    if not _mark_uploaded_with_retry(queue, row, now):
+        return 1
+
+    print(f'Published {row.booking_id} and marked row {row.row_number} as uploaded.')
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,6 +127,9 @@ def main(argv: list[str] | None = None) -> int:
         settings.instagram_access_token = args.instagram_token
     if args.instagram_user_id:
         settings.instagram_user_id = args.instagram_user_id
+
+    if args.post_trip:
+        return run_post_trip(settings, args.force)
 
     if args.drive_export:
         ingestion = DriveIngestion(settings.drive_folder_id, settings.composio_api_key, settings.composio_user_id, settings.project_root)
