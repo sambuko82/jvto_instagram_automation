@@ -22,6 +22,9 @@ class Settings:
     agentic_provider: str | None = None
     review_priority_limit: int = 5
     google_maps_profile_url: str = 'https://g.page/r/Cf9pQvQqZvQZEBM/review'
+    trip_photo_spreadsheet_id: str | None = None
+    trip_photo_sheet_name: str = 'Sheet1'
+    trip_post_interval_days: int = 4
 
 
 def _load_dotenv(path: Path) -> None:
@@ -59,4 +62,7 @@ def load_settings() -> Settings:
         agentic_provider=os.getenv('AGENTIC_PROVIDER') or None,
         review_priority_limit=int(os.getenv('REVIEW_PRIORITY_LIMIT', '5')),
         google_maps_profile_url=os.getenv('JVTO_GOOGLE_MAPS_PROFILE_URL') or 'https://g.page/r/Cf9pQvQqZvQZEBM/review',
+        trip_photo_spreadsheet_id=os.getenv('TRIP_PHOTO_SPREADSHEET_ID') or None,
+        trip_photo_sheet_name=os.getenv('TRIP_PHOTO_SHEET_NAME', 'Sheet1'),
+        trip_post_interval_days=int(os.getenv('TRIP_POST_INTERVAL_DAYS', '4')),
     )
