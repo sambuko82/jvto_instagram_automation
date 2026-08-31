@@ -2,13 +2,13 @@ name: Post trip photos to Instagram
 
 on:
   schedule:
-    # Daily at 02:00 UTC (09:00 WIB). The four-day spacing is enforced in
+    # Daily at 12:00 UTC (19:00 WIB). The four-day spacing is enforced in
     # --post-trip against the sheet's Uploaded At column, not by this cron:
     # a '*/4' day-of-month expression resets at each month boundary, so
     # 29 Jan to 1 Feb would be three days apart. Running daily and gating on
     # real timestamps also means a run lost to an outage is picked up the
     # next day rather than slipping a whole cycle.
-    - cron: '0 2 * * *'
+    - cron: '0 12 * * *'
   workflow_dispatch:
     inputs:
       force:
