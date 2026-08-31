@@ -16,6 +16,17 @@ on:
         type: boolean
         default: false
 
+# A manual workflow_dispatch overlapping the 02:00 UTC schedule would let two
+# runs read the same pending sheet row before either marks it, publishing the
+# same trip to the real business Instagram account twice. Queue the second
+# run instead of cancelling the first: cancel-in-progress is deliberately
+# off, because a run killed between publish_carousel succeeding and the row
+# being marked leaves exactly that duplicate-post state - cancelling would
+# just move the race into the workflow runner instead of removing it.
+concurrency:
+  group: post-trip-photos
+  cancel-in-progress: false
+
 jobs:
   post:
     runs-on: ubuntu-latest
