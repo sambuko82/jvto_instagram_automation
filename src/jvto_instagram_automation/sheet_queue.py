@@ -21,6 +21,11 @@ COL_UPLOADED_AT = 8
 WIDTH = 9
 FIRST_DATA_ROW = 2
 
+# Instagram carousels hold 2-10 items. A row outside that range fails at the
+# carousel container step, which is after the queue has already chosen it.
+MIN_CAROUSEL_ITEMS = 2
+MAX_CAROUSEL_ITEMS = 10
+
 
 def parse_photo_links(cell: str) -> list[str]:
     """The Link Foto cell is one 'Label: url' per line, in carousel order."""
@@ -85,12 +90,37 @@ def rows_from_values(values: list[Any]) -> list[TripRow]:
 
 
 def next_pending(rows: list[TripRow]) -> TripRow | None:
-    """The oldest row that is complete and not yet posted."""
+    """The oldest row that is complete, postable, and not yet posted.
+
+    A row Instagram cannot accept is skipped rather than returned. Without
+    this, one malformed row stalls the queue forever: publishing fails at the
+    carousel container step, run_post_trip returns 1 without marking the row,
+    and every following daily run picks the same row and fails the same way,
+    so no later trip is ever posted. The sheet is hand-edited by design, so a
+    row with a single URL - or one whose URLs were mangled by a destination
+    name containing ": " - is an expected accident, not a hypothetical.
+
+    Every skip is printed with its booking id and row number so a human
+    reading the Actions log can find the offending row and repair it.
+    """
     for row in rows:
         if row.is_uploaded:
             continue
-        if not row.caption.strip() or not row.photo_urls:
+
+        if not row.caption.strip():
+            print(f'Skipping sheet row {row.row_number} ({row.booking_id}): the Caption cell is empty.')
             continue
+
+        count = len(row.photo_urls)
+        if not MIN_CAROUSEL_ITEMS <= count <= MAX_CAROUSEL_ITEMS:
+            print(
+                f'Skipping sheet row {row.row_number} ({row.booking_id}): '
+                f'the Link Foto cell parses to {count} photo URL(s), but an Instagram '
+                f'carousel needs {MIN_CAROUSEL_ITEMS}-{MAX_CAROUSEL_ITEMS}. '
+                'Fix that cell by hand - one "Label: url" per line - and it will be picked up.'
+            )
+            continue
+
         return row
 
     return None

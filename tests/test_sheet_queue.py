@@ -29,30 +29,81 @@ def test_rows_are_padded_and_numbered_from_two():
     assert rows[0].values[8] == ""
 
 
+def _links(count, prefix="u"):
+    return "\n".join(f"Stop {n}: https://i.ibb.co/{prefix}{n}.jpg" for n in range(1, count + 1))
+
+
 def test_next_pending_skips_uploaded_rows():
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1", "cap", "TRUE", "2026-08-20T02:00:00Z"],
-        ["2", "JVTO-2", "B", "P", "C", "Pickup: u2", "cap", "FALSE", ""],
+        ["1", "JVTO-1", "A", "P", "C", _links(2, "a"), "cap", "TRUE", "2026-08-20T02:00:00Z"],
+        ["2", "JVTO-2", "B", "P", "C", _links(2, "b"), "cap", "FALSE", ""],
     ])
 
     pending = next_pending(rows)
 
     assert pending.booking_id == "JVTO-2"
-    assert pending.photo_urls == ["u2"]
+    assert pending.photo_urls == ["https://i.ibb.co/b1.jpg", "https://i.ibb.co/b2.jpg"]
 
 
 def test_next_pending_ignores_rows_with_no_caption_or_no_photos():
     rows = rows_from_values([
         ["1", "JVTO-1", "A", "P", "C", "", "cap", "FALSE", ""],
-        ["2", "JVTO-2", "B", "P", "C", "Pickup: u2", "", "FALSE", ""],
-        ["3", "JVTO-3", "C", "P", "C", "Pickup: u3", "cap", "FALSE", ""],
+        ["2", "JVTO-2", "B", "P", "C", _links(2), "", "FALSE", ""],
+        ["3", "JVTO-3", "C", "P", "C", _links(2), "cap", "FALSE", ""],
     ])
 
     assert next_pending(rows).booking_id == "JVTO-3"
 
 
+def test_next_pending_skips_a_row_with_too_few_photos_for_a_carousel(capsys):
+    # One URL fails at the carousel container step, which is after the row has
+    # been chosen, so the run dies without marking it and retries it forever.
+    rows = rows_from_values([
+        ["1", "JVTO-1", "A", "P", "C", "Pickup: https://i.ibb.co/only.jpg", "cap", "FALSE", ""],
+        ["2", "JVTO-2", "B", "P", "C", _links(2), "cap", "FALSE", ""],
+    ])
+
+    assert next_pending(rows).booking_id == "JVTO-2"
+
+    logged = capsys.readouterr().out
+    assert "JVTO-1" in logged
+    assert "sheet row 2" in logged
+    assert "1 photo URL(s)" in logged
+
+
+def test_next_pending_skips_a_row_with_too_many_photos_for_a_carousel(capsys):
+    rows = rows_from_values([
+        ["1", "JVTO-1", "A", "P", "C", _links(11), "cap", "FALSE", ""],
+        ["2", "JVTO-2", "B", "P", "C", _links(3), "cap", "FALSE", ""],
+    ])
+
+    assert next_pending(rows).booking_id == "JVTO-2"
+
+    logged = capsys.readouterr().out
+    assert "JVTO-1" in logged
+    assert "sheet row 2" in logged
+    assert "11 photo URL(s)" in logged
+
+
+def test_next_pending_accepts_the_carousel_bounds_exactly():
+    assert next_pending(rows_from_values([
+        ["1", "JVTO-1", "A", "P", "C", _links(2), "cap", "FALSE", ""],
+    ])).booking_id == "JVTO-1"
+
+    assert next_pending(rows_from_values([
+        ["1", "JVTO-1", "A", "P", "C", _links(10), "cap", "FALSE", ""],
+    ])).booking_id == "JVTO-1"
+
+
+def test_next_pending_names_a_row_it_skips_for_an_empty_caption(capsys):
+    rows = rows_from_values([["1", "JVTO-1", "A", "P", "C", _links(2), "  ", "FALSE", ""]])
+
+    assert next_pending(rows) is None
+    assert "JVTO-1" in capsys.readouterr().out
+
+
 def test_next_pending_is_none_when_everything_is_posted():
-    rows = rows_from_values([["1", "JVTO-1", "A", "P", "C", "Pickup: u1", "cap", "TRUE", "2026-08-20T02:00:00Z"]])
+    rows = rows_from_values([["1", "JVTO-1", "A", "P", "C", _links(2), "cap", "TRUE", "2026-08-20T02:00:00Z"]])
 
     assert next_pending(rows) is None
 

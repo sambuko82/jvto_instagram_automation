@@ -87,7 +87,7 @@ def test_no_pending_rows_is_a_clean_no_op() -> None:
 
 def test_successful_publish_marks_the_correct_row_exactly_once() -> None:
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1", "cap", "FALSE", ""],
+        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u2", "cap", "FALSE", ""],
     ])
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
@@ -96,7 +96,7 @@ def test_successful_publish_marks_the_correct_row_exactly_once() -> None:
 
     assert rc == 0
     assert len(publisher.calls) == 1
-    assert publisher.calls[0][0] == ['u1']
+    assert publisher.calls[0][0] == ['u1', 'u2']
     assert len(queue.mark_uploaded_calls) == 1
     marked_row, _when = queue.mark_uploaded_calls[0]
     assert marked_row.booking_id == 'JVTO-1'
@@ -105,7 +105,7 @@ def test_successful_publish_marks_the_correct_row_exactly_once() -> None:
 
 def test_publish_failure_does_not_mark_the_row() -> None:
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1", "cap", "FALSE", ""],
+        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u2", "cap", "FALSE", ""],
     ])
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'error', 'message': 'boom'})
@@ -132,8 +132,8 @@ def test_missing_configuration_exits_without_touching_the_queue() -> None:
 def test_force_bypasses_the_gate() -> None:
     recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace('+00:00', 'Z')
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1", "cap", "TRUE", recent],
-        ["2", "JVTO-2", "B", "P", "C", "Pickup: u2", "cap", "FALSE", ""],
+        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u1b", "cap", "TRUE", recent],
+        ["2", "JVTO-2", "B", "P", "C", "Pickup: u2\nDrop: u2b", "cap", "FALSE", ""],
     ])
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
@@ -149,7 +149,7 @@ def test_publish_succeeds_but_marking_fails_every_attempt_is_reported_and_nonzer
     monkeypatch.setattr(cli.time, 'sleep', lambda _seconds: None)
 
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1", "cap", "FALSE", ""],
+        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u2", "cap", "FALSE", ""],
     ])
     queue = FakeQueue(rows, mark_uploaded_exception=RuntimeError('BATCH_UPDATE failed: 503'))
     publisher = FakePublisher({'status': 'published'})
