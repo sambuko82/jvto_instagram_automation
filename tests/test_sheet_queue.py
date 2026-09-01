@@ -10,16 +10,16 @@ from jvto_instagram_automation.sheet_queue import (
 )
 
 
-def _row(no="1", booking="JVTO-1", customer="Cust", package="P", crew="C",
-         instagram="", listed_by="Boy", links="", caption="cap",
+def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code="",
+         crew="C", instagram="", listed_by="Boy", links="", caption="cap",
          uploaded="FALSE", uploaded_at=""):
     """Build a sheet row by name rather than by position.
 
     The columns have shifted once already; positional literals in every
     fixture is what made that a thirteen-test repair instead of a one-line one.
     """
-    return [no, booking, customer, package, crew, instagram, listed_by,
-            links, caption, uploaded, uploaded_at]
+    return [no, booking, customer, package, package_code, crew, instagram,
+            listed_by, links, caption, uploaded, uploaded_at]
 
 
 def test_parse_photo_links_keeps_order_and_survives_the_https_colon():

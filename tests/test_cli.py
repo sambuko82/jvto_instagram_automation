@@ -23,12 +23,12 @@ def make_settings(**overrides) -> Settings:
     return Settings(**defaults)
 
 
-def _row(no="1", booking="JVTO-1", customer="Cust", package="P", crew="C",
-         instagram="", listed_by="Boy", links="", caption="cap",
+def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code="",
+         crew="C", instagram="", listed_by="Boy", links="", caption="cap",
          uploaded="FALSE", uploaded_at=""):
     """Build a sheet row by name, so a column shift is a one-line repair."""
-    return [no, booking, customer, package, crew, instagram, listed_by,
-            links, caption, uploaded, uploaded_at]
+    return [no, booking, customer, package, package_code, crew, instagram,
+            listed_by, links, caption, uploaded, uploaded_at]
 
 
 class FakeQueue:
@@ -58,9 +58,12 @@ class FakePublisher:
     def __init__(self, result):
         self.result = result
         self.calls = []
+        self.package_codes = []
 
-    def publish_carousel(self, image_urls, caption, instagram_user_id=None, collaborators=None):
+    def publish_carousel(self, image_urls, caption, instagram_user_id=None, collaborators=None,
+                         package_code=None):
         self.calls.append((image_urls, caption, instagram_user_id, collaborators or []))
+        self.package_codes.append(package_code)
         return self.result
 
 
@@ -207,3 +210,57 @@ def test_a_post_still_counts_when_instagram_refused_the_collaborators(capsys) ->
     assert len(queue.mark_uploaded_calls) == 1
     out = capsys.readouterr().out
     assert "Collaborators tagged" not in out
+
+
+def test_the_row_s_package_code_is_passed_to_the_publisher() -> None:
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-9", package_code="package-SUB-3D2N-003",
+             links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published', 'product_tagged': True})
+
+    run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+
+    assert publisher.package_codes == ['package-SUB-3D2N-003']
+
+
+def test_a_post_still_counts_when_the_product_tag_was_refused(capsys) -> None:
+    """The requirement in one test: Instagram refused the product tag, the
+    carousel went out anyway, and the row is marked uploaded so the queue moves
+    on. A row left pending here would be re-posted on the next run."""
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-9", package_code="package-SUB-3D2N-003",
+             links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({
+        'status': 'published',
+        'product_tagged': False,
+        'product_tag_skipped': 'package-SUB-3D2N-003 is not in the shop catalog',
+    })
+
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+
+    assert rc == 0
+    assert len(queue.mark_uploaded_calls) == 1
+
+    out = capsys.readouterr().out
+    assert 'Published JVTO-9' in out
+    assert 'Product NOT tagged' in out
+    assert 'not in the shop catalog' in out
+
+
+def test_a_row_with_no_package_code_says_nothing_about_products(capsys) -> None:
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-9", package_code="-",
+             links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published'})
+
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+
+    assert rc == 0
+    assert publisher.package_codes == ['']
+    assert 'Product' not in capsys.readouterr().out

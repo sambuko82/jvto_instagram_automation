@@ -107,6 +107,143 @@ class ComposioPublisher:
 
         return None
 
+    def _shopping_account_id(self) -> str | None:
+        """The Facebook connection that is allowed to tag catalog products.
+
+        Composio's *managed* Facebook OAuth grants only Page and WhatsApp
+        scopes - no instagram_shopping_tag_products, no catalog_management - so
+        a managed connection can never tag a product however it is called. Only
+        one on a custom auth config (the JVTO Meta app) can. That is the filter
+        rather than a hard-coded connection id, which would go stale the first
+        time the account is relinked.
+        """
+        from composio import Composio
+
+        client = Composio(api_key=self.api_key).client
+        page = client.connected_accounts.list(user_ids=[self.user_id])
+
+        for account in getattr(page, 'items', []) or []:
+            toolkit = getattr(account, 'toolkit', None)
+            if getattr(toolkit, 'slug', None) != 'facebook':
+                continue
+            if getattr(account, 'status', None) != 'ACTIVE':
+                continue
+
+            auth_config = getattr(account, 'auth_config', None)
+            if getattr(auth_config, 'is_composio_managed', True):
+                continue
+
+            return getattr(account, 'id', None)
+
+        return None
+
+    def _get(self, account_id: str, endpoint: str) -> dict[str, Any]:
+        from composio import Composio
+
+        client = Composio(api_key=self.api_key).client
+        response = client.tools.proxy(endpoint=endpoint, method='GET', connected_account_id=account_id)
+        data = response.data if isinstance(response.data, dict) else {}
+
+        if 'error' in data:
+            raise RuntimeError((data['error'] or {}).get('message', str(data)))
+
+        return data
+
+    def _product_id_for(self, account_id: str, instagram_user_id: str, retailer_id: str) -> str | None:
+        """The catalog product id Instagram will accept for this package code.
+
+        Two things make the lookup indirect. The shop's catalog is discovered
+        rather than configured, because pinning a catalog id here would break
+        the day the shop is pointed at another one. And the id that works is
+        not the one the catalog's own /products edge returns - that one is
+        refused with "Cannot tag product". Only the merchant-scoped id from
+        catalog_product_search is accepted.
+        """
+        catalogs = (self._get(account_id, f'/{instagram_user_id}/available_catalogs') or {}).get('data') or []
+        if not catalogs:
+            raise RuntimeError('this Instagram account has no shop catalog')
+
+        catalog_id = catalogs[0].get('catalog_id')
+
+        # The roster is 16 packages; one page covers it with room to spare.
+        found = self._get(
+            account_id,
+            f'/{instagram_user_id}/catalog_product_search?catalog_id={catalog_id}&limit=100',
+        )
+
+        for product in found.get('data') or []:
+            if product.get('retailer_id') == retailer_id:
+                return product.get('product_id')
+
+        return None
+
+    def _tagged_children(
+        self, account_id: str, instagram_user_id: str, image_urls: list[str], product_id: str
+    ) -> list[str]:
+        """Carousel children carrying the product tag.
+
+        The tag goes on each child, never on the parent: Meta refuses
+        product_tags on a CAROUSEL container with "The media type 8 is
+        unknown". These children are created through the shopping connection
+        while the parent that assembles them is not - a container belongs to
+        the Instagram user rather than to the token that made it, so the proven
+        publish path stays untouched.
+        """
+        import json
+        import urllib.parse
+
+        from composio import Composio
+
+        client = Composio(api_key=self.api_key).client
+        tags = json.dumps([{'product_id': product_id, 'x': 0.5, 'y': 0.5}])
+        children: list[str] = []
+
+        for image_url in image_urls:
+            query = urllib.parse.urlencode({
+                'image_url': image_url,
+                'is_carousel_item': 'true',
+                'product_tags': tags,
+            })
+            response = client.tools.proxy(
+                endpoint=f'/{instagram_user_id}/media?{query}',
+                method='POST',
+                connected_account_id=account_id,
+            )
+            data = response.data if isinstance(response.data, dict) else {}
+
+            if 'id' not in data:
+                raise RuntimeError((data.get('error') or {}).get('message', str(data)))
+
+            children.append(data['id'])
+
+        return children
+
+    def _product_tagged_children(
+        self, instagram_user_id: str | None, image_urls: list[str], package_code: str
+    ) -> tuple[list[str] | None, str | None]:
+        """Children with the product tagged, or (None, reason) to post without it.
+
+        Every failure here is deliberately non-fatal. A missing shop
+        connection, a package the catalog has never heard of, a product pulled
+        from the shop, a Meta outage on the shopping endpoints - none of those
+        are reasons to lose the trip's post, which is the part that took a crew
+        a whole day to produce. The tag is the garnish; the carousel is the
+        meal. Containers abandoned on this path are never published, and
+        Instagram expires them on its own.
+        """
+        try:
+            account_id = self._shopping_account_id()
+            if not account_id:
+                return None, 'no Meta shop connection is linked'
+
+            product_id = self._product_id_for(account_id, instagram_user_id, package_code)
+            if not product_id:
+                return None, f'{package_code} is not in the shop catalog'
+
+            return self._tagged_children(account_id, instagram_user_id, image_urls, product_id), None
+        except Exception as exc:  # noqa: BLE001 - the post must survive any of these
+            return None, str(exc)
+
     # Meta answers this when it cannot resolve a collaborator, and it means the
     # username is wrong or the account is private. It groups both causes, so the
     # only safe response is to drop the tags and still publish.
@@ -195,6 +332,7 @@ class ComposioPublisher:
         caption: str,
         instagram_user_id: str | None = None,
         collaborators: list[str] | None = None,
+        package_code: str | None = None,
     ) -> dict[str, Any]:
         if not image_urls:
             return {'status': 'dry_run', 'message': 'No image URLs were supplied for carousel publishing.'}
@@ -211,8 +349,23 @@ class ComposioPublisher:
                 'message': "Composio SDK unavailable or Instagram not linked. Run 'composio link instagram' first.",
             }
 
+        # Tagging is attempted first because it needs its own containers, but a
+        # refusal only costs the tag: on any failure this falls through to the
+        # plain child-creation path below and the carousel still goes out.
+        product_tag_skipped: str | None = None
         child_creation_ids: list[str] = []
-        for image_url in image_urls:
+
+        if package_code:
+            tagged, product_tag_skipped = self._product_tagged_children(
+                instagram_user_id, image_urls, package_code
+            )
+            if tagged:
+                child_creation_ids = tagged
+            else:
+                print(f'Posting without a product tag ({package_code}): {product_tag_skipped}')
+
+        # Skipped entirely when the tagged children above already succeeded.
+        for image_url in ([] if child_creation_ids else image_urls):
             child_payload = {'ig_user_id': instagram_user_id, 'image_url': image_url, 'is_carousel_item': True}
             try:
                 # INSTAGRAM_CREATE_MEDIA_CONTAINER is the confirmed real Composio
@@ -263,4 +416,6 @@ class ComposioPublisher:
             'data': publish_result,
             'creation_id': creation_id,
             'dropped_collaborators': dropped,
+            'product_tagged': bool(package_code) and product_tag_skipped is None,
+            'product_tag_skipped': product_tag_skipped,
         }

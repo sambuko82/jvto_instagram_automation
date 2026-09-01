@@ -12,15 +12,17 @@ COL_NO = 0
 COL_BOOKING_ID = 1
 COL_CUSTOMER = 2
 COL_PACKAGE = 3
-COL_CREW = 4
-COL_INSTAGRAM_USERNAMES = 5
-COL_LISTED_BY = 6
-COL_LINKS = 7
-COL_CAPTION = 8
-COL_IS_UPLOADED = 9
-COL_UPLOADED_AT = 10
+# Matches the Meta catalog's retailer_id verbatim, e.g. package-SUB-3D2N-003.
+COL_PACKAGE_CODE = 4
+COL_CREW = 5
+COL_INSTAGRAM_USERNAMES = 6
+COL_LISTED_BY = 7
+COL_LINKS = 8
+COL_CAPTION = 9
+COL_IS_UPLOADED = 10
+COL_UPLOADED_AT = 11
 
-WIDTH = 11
+WIDTH = 12
 FIRST_DATA_ROW = 2
 
 # Instagram carousels hold 2-10 items. A row outside that range fails at the
@@ -60,6 +62,19 @@ class TripRow:
     @property
     def caption(self) -> str:
         return self.values[COL_CAPTION]
+
+    @property
+    def package_code(self) -> str:
+        """Meta catalog retailer_id for this trip's package, or '' if there is none.
+
+        The crew portal writes '-' when it cannot resolve one - a KLOOK package
+        with no website twin, or a booking with no package at all - and that
+        sentinel is normalised away here so callers only ever see a real code or
+        nothing.
+        """
+        code = self.values[COL_PACKAGE_CODE].strip()
+
+        return '' if code == '-' else code
 
     @property
     def instagram_usernames(self) -> list[str]:
@@ -187,7 +202,7 @@ class SheetQueue:
     def fetch_rows(self) -> list[TripRow]:
         data = self._execute('GOOGLESHEETS_BATCH_GET', {
             'spreadsheet_id': self.spreadsheet_id,
-            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:K'],
+            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:L'],
         })
         value_ranges = data.get('valueRanges') or data.get('value_ranges') or []
         values = value_ranges[0].get('values', []) if value_ranges else []
@@ -201,7 +216,7 @@ class SheetQueue:
         self._execute('GOOGLESHEETS_BATCH_UPDATE', {
             'spreadsheet_id': self.spreadsheet_id,
             'sheet_name': self.sheet_name,
-            'first_cell_location': f'J{row.row_number}',
+            'first_cell_location': f'K{row.row_number}',
             'valueInputOption': 'RAW',
             'values': [['TRUE', when.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')]],
         })

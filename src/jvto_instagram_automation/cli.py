@@ -100,6 +100,7 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
         row.caption,
         settings.instagram_user_id,
         collaborators=row.instagram_usernames,
+        package_code=row.package_code,
     )
 
     if result.get('status') != 'published':
@@ -111,7 +112,15 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
 
     tagged = [u for u in row.instagram_usernames if u not in result.get('dropped_collaborators', [])]
     credit = f' Collaborators tagged: {", ".join(tagged)}.' if tagged else ''
-    print(f'Published {row.booking_id} and marked row {row.row_number} as uploaded.{credit}')
+
+    if result.get('product_tagged'):
+        product = f' Product tagged: {row.package_code}.'
+    elif row.package_code:
+        product = f" Product NOT tagged ({row.package_code}): {result.get('product_tag_skipped')}."
+    else:
+        product = ''
+
+    print(f'Published {row.booking_id} and marked row {row.row_number} as uploaded.{credit}{product}')
     return 0
 
 
