@@ -163,13 +163,31 @@ class ComposioPublisher:
             if self._COLLABORATOR_REJECTED not in str(exc):
                 raise
 
-            print(
-                f'Instagram rejected the collaborator tags {collaborators}: the usernames are '
-                'wrong or those accounts are private. Publishing without them - fix the '
-                'instagram_username values so the next post credits them.'
-            )
+        # Meta refuses the whole set without saying which handle it could not
+        # resolve, so ask about them one at a time. Dropping all of them would
+        # cost the crew who did nothing wrong their credit too, and on this
+        # roster most trips have a working handle alongside a stale one. The
+        # extra calls happen only on this path, and the containers they create
+        # are never published - Instagram discards an unpublished one itself.
+        accepted: list[str] = []
+        rejected: list[str] = []
 
-            return attempt([]), list(collaborators)
+        for handle in collaborators:
+            try:
+                attempt([handle])
+                accepted.append(handle)
+            except RuntimeError as probe_exc:
+                if self._COLLABORATOR_REJECTED not in str(probe_exc):
+                    raise
+                rejected.append(handle)
+
+        print(
+            f'Instagram could not resolve {rejected}: those usernames are wrong or '
+            'those accounts are private. Fix the instagram_username values so the '
+            'next post credits them.'
+        )
+
+        return attempt(accepted), rejected
 
     def publish_carousel(
         self,
