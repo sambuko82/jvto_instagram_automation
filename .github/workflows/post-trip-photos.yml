@@ -48,5 +48,6 @@ jobs:
           TRIP_PHOTO_SPREADSHEET_ID: ${{ secrets.TRIP_PHOTO_SPREADSHEET_ID }}
           TRIP_PHOTO_SHEET_NAME: Sheet1
           TRIP_POST_INTERVAL_DAYS: '4'
+          FACEBOOK_PAGE_NAME: Java Volcano Tour Operator
         run: |
           python -m jvto_instagram_automation --post-trip ${{ inputs.force && '--force' || '' }}

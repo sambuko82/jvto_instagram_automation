@@ -19,10 +19,17 @@ COL_INSTAGRAM_USERNAMES = 6
 COL_LISTED_BY = 7
 COL_LINKS = 8
 COL_CAPTION = 9
-COL_IS_UPLOADED = 10
-COL_UPLOADED_AT = 11
+# One pair per platform: a trip can be live on Instagram and still queued for
+# Facebook, and the publisher completes whichever half is missing.
+COL_IS_UPLOADED_IG = 10
+COL_UPLOADED_AT_IG = 11
+COL_IS_UPLOADED_FB = 12
+COL_UPLOADED_AT_FB = 13
 
-WIDTH = 12
+WIDTH = 14
+
+# Column letters for the two 'Is Uploaded' cells, which mark_uploaded writes.
+UPLOADED_CELL = {'instagram': 'K', 'facebook': 'M'}
 FIRST_DATA_ROW = 2
 
 # Instagram carousels hold 2-10 items. A row outside that range fails at the
@@ -88,12 +95,31 @@ class TripRow:
         return parse_photo_links(self.values[COL_LINKS])
 
     @property
+    def is_uploaded_ig(self) -> bool:
+        return self.values[COL_IS_UPLOADED_IG].strip().upper() == 'TRUE'
+
+    @property
+    def is_uploaded_fb(self) -> bool:
+        return self.values[COL_IS_UPLOADED_FB].strip().upper() == 'TRUE'
+
+    @property
     def is_uploaded(self) -> bool:
-        return self.values[COL_IS_UPLOADED].strip().upper() == 'TRUE'
+        """Fully done - live on both platforms, nothing left to publish."""
+        return self.is_uploaded_ig and self.is_uploaded_fb
+
+    @property
+    def is_partly_uploaded(self) -> bool:
+        """Live on one platform but not the other, so it owes a post."""
+        return self.is_uploaded_ig != self.is_uploaded_fb
 
     @property
     def uploaded_at(self) -> str:
-        return self.values[COL_UPLOADED_AT].strip()
+        """The Instagram timestamp, which is what paces the schedule.
+
+        Facebook is a companion post rather than a cadence of its own, so the
+        interval gate reads this one.
+        """
+        return self.values[COL_UPLOADED_AT_IG].strip()
 
 
 def rows_from_values(values: list[Any]) -> list[TripRow]:
@@ -111,6 +137,22 @@ def rows_from_values(values: list[Any]) -> list[TripRow]:
         rows.append(TripRow(row_number=FIRST_DATA_ROW + index, values=cells[:WIDTH]))
 
     return rows
+
+
+def next_unfinished(rows: list[TripRow]) -> TripRow | None:
+    """The oldest row that owes a post on a platform it has already reached.
+
+    Instagram and Facebook are published in the same run, but either can fail
+    on its own. When that happens the trip is half public, and finishing it is
+    not a new post on the schedule - it is repairing one already made. So this
+    is looked for before the interval gate is consulted, and a trip stranded on
+    one platform is completed the next day rather than four days later.
+    """
+    for row in rows:
+        if row.is_partly_uploaded and _is_postable(row, quiet=True):
+            return row
+
+    return None
 
 
 def next_pending(rows: list[TripRow]) -> TripRow | None:
@@ -131,23 +173,36 @@ def next_pending(rows: list[TripRow]) -> TripRow | None:
         if row.is_uploaded:
             continue
 
-        if not row.caption.strip():
-            print(f'Skipping sheet row {row.row_number} ({row.booking_id}): the Caption cell is empty.')
-            continue
+        if _is_postable(row):
+            return row
 
-        count = len(row.photo_urls)
-        if not MIN_CAROUSEL_ITEMS <= count <= MAX_CAROUSEL_ITEMS:
+    return None
+
+
+def _is_postable(row: TripRow, quiet: bool = False) -> bool:
+    """Whether the row holds something publishable, reporting why if not.
+
+    Quiet for the half-finished scan, which runs first over the same rows: a
+    row that is broken gets its reason printed once by next_pending rather than
+    twice by two passes.
+    """
+    if not row.caption.strip():
+        if not quiet:
+            print(f'Skipping sheet row {row.row_number} ({row.booking_id}): the Caption cell is empty.')
+        return False
+
+    count = len(row.photo_urls)
+    if not MIN_CAROUSEL_ITEMS <= count <= MAX_CAROUSEL_ITEMS:
+        if not quiet:
             print(
                 f'Skipping sheet row {row.row_number} ({row.booking_id}): '
                 f'the Link Foto cell parses to {count} photo URL(s), but an Instagram '
                 f'carousel needs {MIN_CAROUSEL_ITEMS}-{MAX_CAROUSEL_ITEMS}. '
                 'Fix that cell by hand - one "Label: url" per line - and it will be picked up.'
             )
-            continue
+        return False
 
-        return row
-
-    return None
+    return True
 
 
 def days_since_last_upload(rows: list[TripRow], now: datetime) -> float | None:
@@ -202,7 +257,7 @@ class SheetQueue:
     def fetch_rows(self) -> list[TripRow]:
         data = self._execute('GOOGLESHEETS_BATCH_GET', {
             'spreadsheet_id': self.spreadsheet_id,
-            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:L'],
+            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:N'],
         })
         value_ranges = data.get('valueRanges') or data.get('value_ranges') or []
         values = value_ranges[0].get('values', []) if value_ranges else []
@@ -212,11 +267,13 @@ class SheetQueue:
     def next_pending(self) -> TripRow | None:
         return next_pending(self.fetch_rows())
 
-    def mark_uploaded(self, row: TripRow, when: datetime) -> None:
+    def mark_uploaded(self, row: TripRow, when: datetime, platform: str = 'instagram') -> None:
+        cell = UPLOADED_CELL[platform]
+
         self._execute('GOOGLESHEETS_BATCH_UPDATE', {
             'spreadsheet_id': self.spreadsheet_id,
             'sheet_name': self.sheet_name,
-            'first_cell_location': f'K{row.row_number}',
+            'first_cell_location': f'{cell}{row.row_number}',
             'valueInputOption': 'RAW',
             'values': [['TRUE', when.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')]],
         })

@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from .composio_publisher import ComposioPublisher
+from .facebook_publisher import FacebookPublisher
 from .config import load_settings
 from .drive_ingestion import DriveIngestion
 from .publisher import publish_to_instagram, upload_to_imgbb
@@ -27,7 +28,8 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _mark_uploaded_with_retry(queue, row, now, attempts: int = 3, backoff_seconds: float = 1.0) -> bool:
+def _mark_uploaded_with_retry(queue, row, now, platform: str = 'instagram',
+                              attempts: int = 3, backoff_seconds: float = 1.0) -> bool:
     """Retries `queue.mark_uploaded` a bounded number of times.
 
     This only runs after `publish_carousel` has already succeeded. If the
@@ -43,7 +45,7 @@ def _mark_uploaded_with_retry(queue, row, now, attempts: int = 3, backoff_second
 
     for attempt in range(1, attempts + 1):
         try:
-            queue.mark_uploaded(row, now)
+            queue.mark_uploaded(row, now, platform)
             return True
         except Exception as exc:  # noqa: BLE001 - any failure here is retried, then reported
             last_exc = exc
@@ -51,18 +53,18 @@ def _mark_uploaded_with_retry(queue, row, now, attempts: int = 3, backoff_second
                 time.sleep(backoff_seconds)
 
     print(
-        f'{row.booking_id} WAS PUBLISHED to Instagram, but marking sheet row {row.row_number} '
+        f'{row.booking_id} WAS PUBLISHED to {platform}, but marking sheet row {row.row_number} '
         f'as uploaded failed {attempts} times in a row: {last_exc}. '
-        f'Set row {row.row_number}\'s "Is Uploaded" to TRUE by hand before the next run, '
-        'or this trip will be posted to Instagram again.'
+        f'Set row {row.row_number}\'s "Is Uploaded {"IG" if platform == "instagram" else "FB"}" '
+        f'to TRUE by hand before the next run, or this trip will be posted to {platform} again.'
     )
     return False
 
 
-def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
+def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publisher=None) -> int:
     from datetime import datetime, timezone
 
-    from .sheet_queue import SheetQueue, days_since_last_upload, next_pending
+    from .sheet_queue import SheetQueue, days_since_last_upload, next_pending, next_unfinished
 
     if not settings.composio_api_key or not settings.trip_photo_spreadsheet_id:
         print('COMPOSIO_API_KEY and TRIP_PHOTO_SPREADSHEET_ID are both required for --post-trip.')
@@ -79,14 +81,23 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
     rows = queue.fetch_rows()
     now = datetime.now(timezone.utc)
 
-    # The cron runs daily and this gate enforces the real spacing, so a run lost
-    # to an outage is picked up the next day instead of slipping a full cycle.
-    elapsed = days_since_last_upload(rows, now)
-    if not force and elapsed is not None and elapsed < settings.trip_post_interval_days:
-        print(f'Last post was {elapsed:.1f} days ago; waiting for {settings.trip_post_interval_days}. Nothing to do.')
-        return 0
+    # A trip stranded on one platform is a repair, not a new post, so it is
+    # finished before the schedule is consulted. Otherwise a Facebook failure
+    # would wait four days for the gate to reopen while the Instagram half sat
+    # public and unmatched.
+    row = next_unfinished(rows)
 
-    row = next_pending(rows)
+    if row is None:
+        # The cron runs daily and this gate enforces the real spacing, so a run
+        # lost to an outage is picked up the next day instead of slipping a
+        # full cycle.
+        elapsed = days_since_last_upload(rows, now)
+        if not force and elapsed is not None and elapsed < settings.trip_post_interval_days:
+            print(f'Last post was {elapsed:.1f} days ago; waiting for {settings.trip_post_interval_days}. Nothing to do.')
+            return 0
+
+        row = next_pending(rows)
+
     if row is None:
         print('No pending trip photo rows. Nothing to do.')
         return 0
@@ -95,6 +106,25 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
 
     if publisher is None:
         publisher = ComposioPublisher(settings.composio_api_key, settings.composio_user_id)
+    if fb_publisher is None:
+        fb_publisher = FacebookPublisher(settings.composio_api_key, settings.composio_user_id)
+
+    failures = 0
+
+    # Independent on purpose. Instagram carries the product tag and the crew
+    # credit; Facebook carries the clickable link neither of those replaces. A
+    # trip losing one is not a reason to withhold the other, and whichever
+    # failed is picked up by the unfinished scan on the next run.
+    if not row.is_uploaded_ig:
+        failures += _post_instagram(queue, row, now, settings, publisher)
+
+    if not row.is_uploaded_fb:
+        failures += _post_facebook(queue, row, now, settings, fb_publisher)
+
+    return 1 if failures else 0
+
+
+def _post_instagram(queue, row, now, settings, publisher) -> int:
     result = publisher.publish_carousel(
         row.photo_urls,
         row.caption,
@@ -104,10 +134,10 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
     )
 
     if result.get('status') != 'published':
-        print(f"Publish failed: {result.get('status')} - {result.get('message')}")
+        print(f"Instagram publish failed: {result.get('status')} - {result.get('message')}")
         return 1
 
-    if not _mark_uploaded_with_retry(queue, row, now):
+    if not _mark_uploaded_with_retry(queue, row, now, 'instagram'):
         return 1
 
     tagged = [u for u in row.instagram_usernames if u not in result.get('dropped_collaborators', [])]
@@ -120,7 +150,28 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
     else:
         product = ''
 
-    print(f'Published {row.booking_id} and marked row {row.row_number} as uploaded.{credit}{product}')
+    print(f'Instagram: published {row.booking_id}, row {row.row_number} marked.{credit}{product}')
+    return 0
+
+
+def _post_facebook(queue, row, now, settings, publisher) -> int:
+    # The caption goes out whole. Instagram drops its trailing link once a
+    # product tag carries it, but on Facebook that link is clickable and is the
+    # only thing that will actually take a reader to the package page.
+    result = publisher.publish_photo_post(
+        row.photo_urls,
+        row.caption,
+        page_name=settings.facebook_page_name,
+    )
+
+    if result.get('status') != 'published':
+        print(f"Facebook publish failed: {result.get('status')} - {result.get('message')}")
+        return 1
+
+    if not _mark_uploaded_with_retry(queue, row, now, 'facebook'):
+        return 1
+
+    print(f"Facebook: published {row.booking_id} as {result.get('post_id')}, row {row.row_number} marked.")
     return 0
 
 

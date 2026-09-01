@@ -12,14 +12,21 @@ from jvto_instagram_automation.sheet_queue import (
 
 def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code="",
          crew="C", instagram="", listed_by="Boy", links="", caption="cap",
-         uploaded="FALSE", uploaded_at=""):
+         uploaded="FALSE", uploaded_at="", uploaded_fb=None, uploaded_at_fb=""):
     """Build a sheet row by name rather than by position.
 
     The columns have shifted once already; positional literals in every
     fixture is what made that a thirteen-test repair instead of a one-line one.
     """
+    # Facebook mirrors Instagram unless a test says otherwise, so existing
+    # fixtures keep meaning "posted" or "not posted" rather than accidentally
+    # becoming half-finished rows.
+    if uploaded_fb is None:
+        uploaded_fb = uploaded
+
     return [no, booking, customer, package, package_code, crew, instagram,
-            listed_by, links, caption, uploaded, uploaded_at]
+            listed_by, links, caption, uploaded, uploaded_at,
+            uploaded_fb, uploaded_at_fb]
 
 
 def test_parse_photo_links_keeps_order_and_survives_the_https_colon():

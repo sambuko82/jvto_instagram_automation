@@ -25,10 +25,17 @@ def make_settings(**overrides) -> Settings:
 
 def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code="",
          crew="C", instagram="", listed_by="Boy", links="", caption="cap",
-         uploaded="FALSE", uploaded_at=""):
+         uploaded="FALSE", uploaded_at="", uploaded_fb=None, uploaded_at_fb=""):
     """Build a sheet row by name, so a column shift is a one-line repair."""
+    # Facebook mirrors Instagram unless a test says otherwise, so existing
+    # fixtures keep meaning "posted" or "not posted" rather than accidentally
+    # becoming half-finished rows.
+    if uploaded_fb is None:
+        uploaded_fb = uploaded
+
     return [no, booking, customer, package, package_code, crew, instagram,
-            listed_by, links, caption, uploaded, uploaded_at]
+            listed_by, links, caption, uploaded, uploaded_at,
+            uploaded_fb, uploaded_at_fb]
 
 
 class FakeQueue:
@@ -46,10 +53,32 @@ class FakeQueue:
         self.fetch_rows_calls += 1
         return self.rows
 
-    def mark_uploaded(self, row, when):
-        self.mark_uploaded_calls.append((row, when))
+    def mark_uploaded(self, row, when, platform='instagram'):
+        self.mark_uploaded_calls.append((row, when, platform))
         if self._mark_uploaded_exception is not None:
             raise self._mark_uploaded_exception
+
+
+def _marked(queue, platform):
+    """How many times the row was marked uploaded for one platform."""
+    return [c for c in queue.mark_uploaded_calls if c[2] == platform]
+
+
+class FakeFacebookPublisher:
+    """Stands in for FacebookPublisher.publish_photo_post.
+
+    Every run_post_trip call passes one. Without it the CLI reaches the real
+    publisher and the suite talks to the network - which is exactly how this
+    class came to exist.
+    """
+
+    def __init__(self, result=None):
+        self.result = result or {'status': 'published', 'post_id': 'fb_1'}
+        self.calls = []
+
+    def publish_photo_post(self, image_urls, message, page_name=None):
+        self.calls.append((image_urls, message, page_name))
+        return self.result
 
 
 class FakePublisher:
@@ -76,7 +105,7 @@ def test_gate_declines_when_four_days_have_not_elapsed(capsys) -> None:
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
     assert publisher.calls == []
@@ -89,7 +118,7 @@ def test_no_pending_rows_is_a_clean_no_op() -> None:
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
     assert publisher.calls == []
@@ -103,13 +132,15 @@ def test_successful_publish_marks_the_correct_row_exactly_once() -> None:
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
     assert len(publisher.calls) == 1
     assert publisher.calls[0][0] == ['u1', 'u2']
-    assert len(queue.mark_uploaded_calls) == 1
-    marked_row, _when = queue.mark_uploaded_calls[0]
+    # One run now publishes both platforms, and each marks its own cell.
+    assert len(_marked(queue, 'instagram')) == 1
+    assert len(_marked(queue, 'facebook')) == 1
+    marked_row, _when, _platform = queue.mark_uploaded_calls[0]
     assert marked_row.booking_id == 'JVTO-1'
     assert marked_row.row_number == 2
 
@@ -121,11 +152,16 @@ def test_publish_failure_does_not_mark_the_row() -> None:
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'error', 'message': 'boom'})
 
-    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 1
     assert len(publisher.calls) == 1
-    assert queue.mark_uploaded_calls == []
+    # Instagram failed, so its cell stays FALSE and the run reports non-zero.
+    # Facebook is independent and still went out - the whole reason the two
+    # platforms have separate columns. The next run finds the row half done
+    # and retries only Instagram.
+    assert _marked(queue, 'instagram') == []
+    assert len(_marked(queue, 'facebook')) == 1
 
 
 def test_missing_configuration_exits_without_touching_the_queue() -> None:
@@ -133,7 +169,7 @@ def test_missing_configuration_exits_without_touching_the_queue() -> None:
     queue = FakeQueue(rows_from_values([]))
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(settings, force=False, queue=queue, publisher=publisher)
+    rc = run_post_trip(settings, force=False, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 1
     assert queue.fetch_rows_calls == 0
@@ -149,11 +185,11 @@ def test_force_bypasses_the_gate() -> None:
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
     assert len(publisher.calls) == 1
-    assert len(queue.mark_uploaded_calls) == 1
+    assert len(_marked(queue, 'instagram')) == 1
 
 
 def test_publish_succeeds_but_marking_fails_every_attempt_is_reported_and_nonzero(capsys, monkeypatch) -> None:
@@ -165,13 +201,13 @@ def test_publish_succeeds_but_marking_fails_every_attempt_is_reported_and_nonzer
     queue = FakeQueue(rows, mark_uploaded_exception=RuntimeError('BATCH_UPDATE failed: 503'))
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc != 0
     # The publish itself must not be retried - only the marking.
     assert len(publisher.calls) == 1
     # Bounded retry: three attempts to mark, then give up.
-    assert len(queue.mark_uploaded_calls) == 3
+    assert len(_marked(queue, 'instagram')) == 3
 
     out = capsys.readouterr().out
     assert 'JVTO-1' in out
@@ -187,7 +223,7 @@ def test_the_row_s_instagram_usernames_are_passed_as_collaborators(capsys) -> No
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
     assert publisher.calls[0][3] == ["anjasstywn", "kiki.the.explorer"]
@@ -204,10 +240,10 @@ def test_a_post_still_counts_when_instagram_refused_the_collaborators(capsys) ->
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published', 'dropped_collaborators': ['gone_handle']})
 
-    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
-    assert len(queue.mark_uploaded_calls) == 1
+    assert len(_marked(queue, 'instagram')) == 1
     out = capsys.readouterr().out
     assert "Collaborators tagged" not in out
 
@@ -220,7 +256,7 @@ def test_the_row_s_package_code_is_passed_to_the_publisher() -> None:
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published', 'product_tagged': True})
 
-    run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+    run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert publisher.package_codes == ['package-SUB-3D2N-003']
 
@@ -240,13 +276,13 @@ def test_a_post_still_counts_when_the_product_tag_was_refused(capsys) -> None:
         'product_tag_skipped': 'package-SUB-3D2N-003 is not in the shop catalog',
     })
 
-    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
-    assert len(queue.mark_uploaded_calls) == 1
+    assert len(_marked(queue, 'instagram')) == 1
 
     out = capsys.readouterr().out
-    assert 'Published JVTO-9' in out
+    assert 'Instagram: published JVTO-9' in out
     assert 'Product NOT tagged' in out
     assert 'not in the shop catalog' in out
 
@@ -259,8 +295,83 @@ def test_a_row_with_no_package_code_says_nothing_about_products(capsys) -> None:
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
 
-    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher, fb_publisher=FakeFacebookPublisher())
 
     assert rc == 0
     assert publisher.package_codes == ['']
     assert 'Product' not in capsys.readouterr().out
+
+
+def test_a_half_finished_trip_is_completed_before_the_gate_is_consulted(capsys) -> None:
+    """Instagram went out; Facebook did not. Finishing that is a repair, not a
+    new post, so it must not wait four days for the interval gate to reopen
+    while half the trip sits public and unmatched."""
+    recent = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace('+00:00', 'Z')
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-1", links="Pickup: u1\nDrop: u2", caption="cap",
+             uploaded="TRUE", uploaded_at=recent, uploaded_fb="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published'})
+    fb = FakeFacebookPublisher()
+
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher, fb_publisher=fb)
+
+    assert rc == 0
+    assert publisher.calls == []                    # Instagram already done
+    assert len(fb.calls) == 1                       # Facebook caught up
+    assert len(_marked(queue, 'facebook')) == 1
+    assert 'waiting for' not in capsys.readouterr().out
+
+
+def test_a_fully_posted_trip_is_left_alone() -> None:
+    recent = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace('+00:00', 'Z')
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-1", links="Pickup: u1\nDrop: u2", caption="cap",
+             uploaded="TRUE", uploaded_at=recent, uploaded_fb="TRUE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published'})
+    fb = FakeFacebookPublisher()
+
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher, fb_publisher=fb)
+
+    assert rc == 0
+    assert publisher.calls == []
+    assert fb.calls == []
+
+
+def test_facebook_keeps_the_caption_whole() -> None:
+    """Instagram drops the trailing link once a product tag carries it. On
+    Facebook that link is clickable and is the only route to the package page,
+    so the caption goes out untouched."""
+    caption = "Three days on the mountain.\n\n#bromo\n\nhttps://javavolcano-touroperator.com/tours/x"
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-9", package_code="package-SUB-3D2N-002",
+             links="Pickup: u1\nDrop: u2", caption=caption, uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    fb = FakeFacebookPublisher()
+
+    run_post_trip(make_settings(), force=True, queue=queue,
+                  publisher=FakePublisher({'status': 'published'}), fb_publisher=fb)
+
+    _urls, message, page_name = fb.calls[0]
+    assert message == caption
+    assert page_name == 'Java Volcano Tour Operator'
+
+
+def test_a_facebook_failure_does_not_undo_instagram(capsys) -> None:
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-1", links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    fb = FakeFacebookPublisher({'status': 'error', 'message': 'page token expired'})
+
+    rc = run_post_trip(make_settings(), force=True, queue=queue,
+                       publisher=FakePublisher({'status': 'published'}), fb_publisher=fb)
+
+    assert rc == 1
+    assert len(_marked(queue, 'instagram')) == 1     # Instagram stands
+    assert _marked(queue, 'facebook') == []          # and Facebook retries next run
+    assert 'Facebook publish failed' in capsys.readouterr().out

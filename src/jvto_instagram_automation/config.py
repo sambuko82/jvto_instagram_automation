@@ -25,6 +25,9 @@ class Settings:
     trip_photo_spreadsheet_id: str | None = None
     trip_photo_sheet_name: str = 'Sheet1'
     trip_post_interval_days: int = 4
+    # Chosen by name, never by position: the connection administers five Pages
+    # and the first one listed is not this business.
+    facebook_page_name: str = 'Java Volcano Tour Operator'
 
 
 def _load_dotenv(path: Path) -> None:
@@ -65,4 +68,5 @@ def load_settings() -> Settings:
         trip_photo_spreadsheet_id=os.getenv('TRIP_PHOTO_SPREADSHEET_ID') or None,
         trip_photo_sheet_name=os.getenv('TRIP_PHOTO_SHEET_NAME', 'Sheet1'),
         trip_post_interval_days=int(os.getenv('TRIP_POST_INTERVAL_DAYS') or '4'),
+        facebook_page_name=os.getenv('FACEBOOK_PAGE_NAME') or 'Java Volcano Tour Operator',
     )
