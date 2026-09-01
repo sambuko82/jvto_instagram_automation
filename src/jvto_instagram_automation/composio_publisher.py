@@ -126,32 +126,43 @@ class ComposioPublisher:
     # the photo is fine and only the timing was wrong.
     _MEDIA_URL_REFUSED = 'Only photo or video can be accepted as media type'
 
-    def _create_child_container(
-        self, tools: Any, payload: dict[str, Any], attempts: int = 4, backoff_seconds: float = 8.0
+    def _waiting_out_throttling(
+        self, image_url: str, create, attempts: int = 4, backoff_seconds: float = 8.0
     ) -> Any:
-        """Create one carousel child, waiting out a throttled fetch.
+        """Run a container creation, waiting out a throttled fetch.
 
         Retried only for the rejection above. Anything else - a genuinely
-        broken URL, a revoked token - fails on the first try, because retrying
-        those just delays the same answer.
+        broken URL, a revoked token, a product that cannot be tagged - fails on
+        the first try, because retrying those just delays the same answer.
+
+        Both paths that create containers go through here. Guarding only the
+        untagged fallback, as the first version of this did, meant a throttled
+        fetch during tagging gave up instantly and the post lost its product
+        tag to a hiccup the fallback then rode out two retries later.
         """
         import time
 
         for attempt in range(1, attempts + 1):
             try:
-                return self._invoke_tool(
-                    tools,
-                    ('INSTAGRAM_CREATE_MEDIA_CONTAINER', 'instagram_create_media_container'),
-                    payload,
-                )
+                return create()
             except Exception as exc:
                 if self._MEDIA_URL_REFUSED not in str(exc) or attempt == attempts:
                     raise
                 print(
-                    f'Meta could not fetch {payload.get("image_url")} on attempt {attempt} '
+                    f'Meta could not fetch {image_url} on attempt {attempt} '
                     f'(the host throttled it); retrying in {backoff_seconds:.0f}s.'
                 )
                 time.sleep(backoff_seconds)
+
+    def _create_child_container(self, tools: Any, payload: dict[str, Any]) -> Any:
+        return self._waiting_out_throttling(
+            payload.get('image_url'),
+            lambda: self._invoke_tool(
+                tools,
+                ('INSTAGRAM_CREATE_MEDIA_CONTAINER', 'instagram_create_media_container'),
+                payload,
+            ),
+        )
 
     def _shopping_account_id(self) -> str | None:
         """The Facebook connection that is allowed to tag catalog products.
@@ -263,7 +274,7 @@ class ComposioPublisher:
         tags = json.dumps([{'product_id': product_id, 'x': 0.5, 'y': 0.5}])
         children: list[str] = []
 
-        for image_url in image_urls:
+        def create(image_url: str) -> str:
             query = urllib.parse.urlencode({
                 'image_url': image_url,
                 'is_carousel_item': 'true',
@@ -279,7 +290,12 @@ class ComposioPublisher:
             if 'id' not in data:
                 raise RuntimeError((data.get('error') or {}).get('message', str(data)))
 
-            children.append(data['id'])
+            return data['id']
+
+        for image_url in image_urls:
+            children.append(
+                self._waiting_out_throttling(image_url, lambda url=image_url: create(url))
+            )
 
         return children
 

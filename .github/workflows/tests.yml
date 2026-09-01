@@ -22,7 +22,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -e .
+          # The composio extra is not optional for this suite: test_collaborators
+          # imports composio at module scope, so without it pytest fails during
+          # COLLECTION and every test in the repo is reported as failing.
+          pip install -e ".[composio]"
           pip install pytest
 
       - name: Run tests

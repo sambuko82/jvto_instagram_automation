@@ -119,3 +119,64 @@ def test_an_unreachable_business_account_skips_the_tag_without_raising():
 
     assert children is None
     assert 'no Instagram business account' in reason
+
+
+THROTTLED = 'Only photo or video can be accepted as media type'
+
+
+def test_a_throttled_fetch_is_retried_rather_than_surrendered():
+    """The host answers 429 under burst load and Meta reports it as a bad
+    media type. Both container paths must ride that out - the first version
+    guarded only the untagged fallback, and a real post lost its product tag
+    to a hiccup the fallback then survived two retries later."""
+    calls = []
+
+    def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise RuntimeError(f'Instagram API rejected the media URL. Error: {THROTTLED}.')
+        return 'container-1'
+
+    publisher = _publisher()
+    result = publisher._waiting_out_throttling('u1', flaky, backoff_seconds=0)
+
+    assert result == 'container-1'
+    assert len(calls) == 3
+
+
+def test_a_genuine_rejection_is_not_retried():
+    """Retrying a broken URL or a revoked token only delays the same answer."""
+    calls = []
+
+    def broken():
+        calls.append(1)
+        raise RuntimeError('The image URL returned 404')
+
+    publisher = _publisher()
+
+    try:
+        publisher._waiting_out_throttling('u1', broken, backoff_seconds=0)
+        raise AssertionError('should have raised')
+    except RuntimeError as exc:
+        assert '404' in str(exc)
+
+    assert len(calls) == 1
+
+
+def test_throttling_that_never_clears_still_gives_up():
+    """Otherwise the run hangs instead of falling through to an untagged post."""
+    calls = []
+
+    def always_throttled():
+        calls.append(1)
+        raise RuntimeError(f'Instagram API rejected the media URL. Error: {THROTTLED}.')
+
+    publisher = _publisher()
+
+    try:
+        publisher._waiting_out_throttling('u1', always_throttled, attempts=3, backoff_seconds=0)
+        raise AssertionError('should have raised')
+    except RuntimeError as exc:
+        assert THROTTLED in str(exc)
+
+    assert len(calls) == 3
