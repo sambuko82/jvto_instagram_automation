@@ -13,12 +13,14 @@ COL_BOOKING_ID = 1
 COL_CUSTOMER = 2
 COL_PACKAGE = 3
 COL_CREW = 4
-COL_LINKS = 5
-COL_CAPTION = 6
-COL_IS_UPLOADED = 7
-COL_UPLOADED_AT = 8
+COL_INSTAGRAM_USERNAMES = 5
+COL_LISTED_BY = 6
+COL_LINKS = 7
+COL_CAPTION = 8
+COL_IS_UPLOADED = 9
+COL_UPLOADED_AT = 10
 
-WIDTH = 9
+WIDTH = 11
 FIRST_DATA_ROW = 2
 
 # Instagram carousels hold 2-10 items. A row outside that range fails at the
@@ -58,6 +60,13 @@ class TripRow:
     @property
     def caption(self) -> str:
         return self.values[COL_CAPTION]
+
+    @property
+    def instagram_usernames(self) -> list[str]:
+        """Crew handles for Instagram collaborator tags, if any were recorded."""
+        raw = self.values[COL_INSTAGRAM_USERNAMES]
+
+        return [u.strip().lstrip('@') for u in raw.split(',') if u.strip()]
 
     @property
     def photo_urls(self) -> list[str]:
@@ -178,7 +187,7 @@ class SheetQueue:
     def fetch_rows(self) -> list[TripRow]:
         data = self._execute('GOOGLESHEETS_BATCH_GET', {
             'spreadsheet_id': self.spreadsheet_id,
-            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:I'],
+            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:K'],
         })
         value_ranges = data.get('valueRanges') or data.get('value_ranges') or []
         values = value_ranges[0].get('values', []) if value_ranges else []
@@ -192,7 +201,7 @@ class SheetQueue:
         self._execute('GOOGLESHEETS_BATCH_UPDATE', {
             'spreadsheet_id': self.spreadsheet_id,
             'sheet_name': self.sheet_name,
-            'first_cell_location': f'H{row.row_number}',
+            'first_cell_location': f'J{row.row_number}',
             'valueInputOption': 'RAW',
             'values': [['TRUE', when.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')]],
         })

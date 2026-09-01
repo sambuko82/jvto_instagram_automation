@@ -23,6 +23,14 @@ def make_settings(**overrides) -> Settings:
     return Settings(**defaults)
 
 
+def _row(no="1", booking="JVTO-1", customer="Cust", package="P", crew="C",
+         instagram="", listed_by="Boy", links="", caption="cap",
+         uploaded="FALSE", uploaded_at=""):
+    """Build a sheet row by name, so a column shift is a one-line repair."""
+    return [no, booking, customer, package, crew, instagram, listed_by,
+            links, caption, uploaded, uploaded_at]
+
+
 class FakeQueue:
     """Stands in for SheetQueue. `mark_uploaded_exception` can be a single
     exception (raised every attempt) so the retry-then-report path can be
@@ -59,8 +67,8 @@ class FakePublisher:
 def test_gate_declines_when_four_days_have_not_elapsed(capsys) -> None:
     recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace('+00:00', 'Z')
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1", "cap", "TRUE", recent],
-        ["2", "JVTO-2", "B", "P", "C", "Pickup: u2", "cap", "FALSE", ""],
+        _row(no="1", booking="JVTO-1", customer="A", package="P", crew="C", links="Pickup: u1", caption="cap", uploaded="TRUE", uploaded_at=recent),
+        _row(no="2", booking="JVTO-2", customer="B", package="P", crew="C", links="Pickup: u2", caption="cap", uploaded="FALSE", uploaded_at=""),
     ])
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
@@ -87,7 +95,7 @@ def test_no_pending_rows_is_a_clean_no_op() -> None:
 
 def test_successful_publish_marks_the_correct_row_exactly_once() -> None:
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u2", "cap", "FALSE", ""],
+        _row(no="1", booking="JVTO-1", customer="A", package="P", crew="C", links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE", uploaded_at=""),
     ])
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
@@ -105,7 +113,7 @@ def test_successful_publish_marks_the_correct_row_exactly_once() -> None:
 
 def test_publish_failure_does_not_mark_the_row() -> None:
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u2", "cap", "FALSE", ""],
+        _row(no="1", booking="JVTO-1", customer="A", package="P", crew="C", links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE", uploaded_at=""),
     ])
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'error', 'message': 'boom'})
@@ -132,8 +140,8 @@ def test_missing_configuration_exits_without_touching_the_queue() -> None:
 def test_force_bypasses_the_gate() -> None:
     recent = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat().replace('+00:00', 'Z')
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u1b", "cap", "TRUE", recent],
-        ["2", "JVTO-2", "B", "P", "C", "Pickup: u2\nDrop: u2b", "cap", "FALSE", ""],
+        _row(no="1", booking="JVTO-1", customer="A", package="P", crew="C", links="Pickup: u1\nDrop: u1b", caption="cap", uploaded="TRUE", uploaded_at=recent),
+        _row(no="2", booking="JVTO-2", customer="B", package="P", crew="C", links="Pickup: u2\nDrop: u2b", caption="cap", uploaded="FALSE", uploaded_at=""),
     ])
     queue = FakeQueue(rows)
     publisher = FakePublisher({'status': 'published'})
@@ -149,7 +157,7 @@ def test_publish_succeeds_but_marking_fails_every_attempt_is_reported_and_nonzer
     monkeypatch.setattr(cli.time, 'sleep', lambda _seconds: None)
 
     rows = rows_from_values([
-        ["1", "JVTO-1", "A", "P", "C", "Pickup: u1\nDrop: u2", "cap", "FALSE", ""],
+        _row(no="1", booking="JVTO-1", customer="A", package="P", crew="C", links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE", uploaded_at=""),
     ])
     queue = FakeQueue(rows, mark_uploaded_exception=RuntimeError('BATCH_UPDATE failed: 503'))
     publisher = FakePublisher({'status': 'published'})
