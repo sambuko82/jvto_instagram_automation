@@ -48,6 +48,7 @@ def test_no_shop_connection_skips_the_tag_without_raising():
 def test_a_package_absent_from_the_catalog_skips_the_tag_without_raising():
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
+    publisher._business_account_id = lambda account: 'ig_business'
     publisher._product_id_for = lambda account, ig, code: None
 
     children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-GHOST')
@@ -62,6 +63,7 @@ def test_a_meta_outage_mid_lookup_skips_the_tag_without_raising():
 
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
+    publisher._business_account_id = lambda account: 'ig_business'
     publisher._product_id_for = explode
 
     children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-X')
@@ -79,6 +81,7 @@ def test_a_container_refused_at_the_last_step_skips_the_tag_without_raising():
 
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
+    publisher._business_account_id = lambda account: 'ig_business'
     publisher._product_id_for = lambda account, ig, code: '123'
     publisher._tagged_children = explode
 
@@ -91,6 +94,7 @@ def test_a_container_refused_at_the_last_step_skips_the_tag_without_raising():
 def test_the_happy_path_returns_children_and_no_reason():
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
+    publisher._business_account_id = lambda account: 'ig_business'
     publisher._product_id_for = lambda account, ig, code: '123'
     publisher._tagged_children = lambda account, ig, urls, pid: ['c1', 'c2']
 
@@ -98,3 +102,20 @@ def test_the_happy_path_returns_children_and_no_reason():
 
     assert children == ['c1', 'c2']
     assert reason is None
+
+
+def test_an_unreachable_business_account_skips_the_tag_without_raising():
+    """The shopping edges hang off the Instagram *business* account id, which
+    is a different number from the one the publish path posts with. If that
+    lookup fails, the post still has to go out."""
+    def explode(account):
+        raise RuntimeError('no Instagram business account is linked to these Pages')
+
+    publisher = _publisher()
+    publisher._shopping_account_id = lambda: 'ca_1'
+    publisher._business_account_id = explode
+
+    children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-X')
+
+    assert children is None
+    assert 'no Instagram business account' in reason

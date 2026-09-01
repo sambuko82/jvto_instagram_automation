@@ -70,6 +70,13 @@ class ComposioPublisher:
         if tools is None:
             raise RuntimeError('Composio tools are not available')
 
+        # The loop exists to tolerate SDK shape differences, so a failure of one
+        # spelling has to keep trying the next. But the LAST real error is kept
+        # and re-raised: reporting only 'no call succeeded' turned a plainly
+        # worded Meta rejection ("Only photo or video can be accepted as media
+        # type") into an unexplained failure, and cost an afternoon.
+        last_error: Exception | None = None
+
         for tool_name in tool_names:
             for method_name in ('execute', 'run', 'invoke'):
                 method = getattr(tools, method_name, None)
@@ -80,10 +87,16 @@ class ComposioPublisher:
                 except TypeError:
                     try:
                         return method(tool_name, **kwargs)
-                    except Exception:
+                    except Exception as exc:
+                        last_error = exc
                         continue
-                except Exception:
+                except Exception as exc:
+                    last_error = exc
                     continue
+
+        if last_error is not None:
+            raise RuntimeError(str(last_error)) from last_error
+
         raise RuntimeError('No compatible Instagram tool call succeeded')
 
 
@@ -106,6 +119,39 @@ class ComposioPublisher:
                 return getattr(account, 'id', None)
 
         return None
+
+    # Meta's fetcher pulls each photo from several IPs at once, which trips the
+    # crew portal host's burst rate limit; the 429 it gets back is reported as
+    # this, with no mention of throttling. The limiter recovers in seconds, so
+    # the photo is fine and only the timing was wrong.
+    _MEDIA_URL_REFUSED = 'Only photo or video can be accepted as media type'
+
+    def _create_child_container(
+        self, tools: Any, payload: dict[str, Any], attempts: int = 4, backoff_seconds: float = 8.0
+    ) -> Any:
+        """Create one carousel child, waiting out a throttled fetch.
+
+        Retried only for the rejection above. Anything else - a genuinely
+        broken URL, a revoked token - fails on the first try, because retrying
+        those just delays the same answer.
+        """
+        import time
+
+        for attempt in range(1, attempts + 1):
+            try:
+                return self._invoke_tool(
+                    tools,
+                    ('INSTAGRAM_CREATE_MEDIA_CONTAINER', 'instagram_create_media_container'),
+                    payload,
+                )
+            except Exception as exc:
+                if self._MEDIA_URL_REFUSED not in str(exc) or attempt == attempts:
+                    raise
+                print(
+                    f'Meta could not fetch {payload.get("image_url")} on attempt {attempt} '
+                    f'(the host throttled it); retrying in {backoff_seconds:.0f}s.'
+                )
+                time.sleep(backoff_seconds)
 
     def _shopping_account_id(self) -> str | None:
         """The Facebook connection that is allowed to tag catalog products.
@@ -148,6 +194,25 @@ class ComposioPublisher:
             raise RuntimeError((data['error'] or {}).get('message', str(data)))
 
         return data
+
+    def _business_account_id(self, account_id: str) -> str:
+        """The Instagram Business Account id, as graph.facebook.com knows it.
+
+        Not the same number as INSTAGRAM_USER_ID, which the publish path uses:
+        that one is the Instagram-Login id and the shopping edges do not exist
+        on it, so asking it for available_catalogs answers "nonexisting field".
+        Discovered from the Page rather than added as another secret, because
+        two ids for one account in configuration is a trap someone will fall
+        into again.
+        """
+        pages = (self._get(account_id, '/me/accounts?fields=instagram_business_account') or {}).get('data') or []
+
+        for page in pages:
+            business_account = page.get('instagram_business_account') or {}
+            if business_account.get('id'):
+                return business_account['id']
+
+        raise RuntimeError('no Instagram business account is linked to these Pages')
 
     def _product_id_for(self, account_id: str, instagram_user_id: str, retailer_id: str) -> str | None:
         """The catalog product id Instagram will accept for this package code.
@@ -236,11 +301,15 @@ class ComposioPublisher:
             if not account_id:
                 return None, 'no Meta shop connection is linked'
 
-            product_id = self._product_id_for(account_id, instagram_user_id, package_code)
+            # Deliberately ignores the instagram_user_id the publish path uses:
+            # the shopping edges live on the business account id instead.
+            business_id = self._business_account_id(account_id)
+
+            product_id = self._product_id_for(account_id, business_id, package_code)
             if not product_id:
                 return None, f'{package_code} is not in the shop catalog'
 
-            return self._tagged_children(account_id, instagram_user_id, image_urls, product_id), None
+            return self._tagged_children(account_id, business_id, image_urls, product_id), None
         except Exception as exc:  # noqa: BLE001 - the post must survive any of these
             return None, str(exc)
 
@@ -372,11 +441,7 @@ class ComposioPublisher:
                 # action name for creating a single carousel-child container -
                 # INSTAGRAM_CREATE_CAROUSEL_CONTAINER only accepts already-created
                 # child creation_ids, not raw image URLs.
-                child_container = self._invoke_tool(
-                    tools,
-                    ('INSTAGRAM_CREATE_MEDIA_CONTAINER', 'instagram_create_media_container'),
-                    child_payload,
-                )
+                child_container = self._create_child_container(tools, child_payload)
             except Exception as exc:
                 return {'status': 'error', 'message': f'Failed to create carousel child container for {image_url}: {exc}'}
 
