@@ -1,8 +1,55 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
+
+
+def _same_link(one: str, other: str) -> bool:
+    """Whether two URLs point at the same page.
+
+    Compared after collapsing repeated slashes in the path and dropping a
+    trailing one, because the caption's link is assembled by string
+    concatenation in the crew portal and a package slug that already starts
+    with '/' yields 'example.com//tours/...'. That is the same page, and the
+    caption should not keep a redundant link over a stray character.
+    """
+    def normalise(url: str) -> str:
+        scheme, _, rest = url.strip().rstrip('/').partition('://')
+        return scheme + '://' + re.sub(r'/{2,}', '/', rest)
+
+    return bool(one.strip()) and normalise(one) == normalise(other)
+
+
+def drop_trailing_link(caption: str, product_url: str) -> str:
+    """Remove the caption's final line when it is exactly the product's link.
+
+    Once the product is tagged, the tag is the link - tappable, priced, and in
+    the image itself - while a URL in an Instagram caption cannot even be
+    clicked. So the caption keeps its call to action and loses the dead text.
+
+    Deliberately narrow: only the last line, only when that whole line is that
+    URL. The caption is written by a model, and anything looser would risk
+    eating a line it was never meant to touch. When the link is not exactly
+    there, the caption is returned untouched.
+    """
+    if not product_url.strip():
+        return caption
+
+    lines = caption.rstrip().split('\n')
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    if not lines or not _same_link(lines[-1], product_url):
+        return caption
+
+    lines.pop()
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    return '\n'.join(lines)
 
 
 class _ComposioToolExecutor:
@@ -225,15 +272,19 @@ class ComposioPublisher:
 
         raise RuntimeError('no Instagram business account is linked to these Pages')
 
-    def _product_id_for(self, account_id: str, instagram_user_id: str, retailer_id: str) -> str | None:
-        """The catalog product id Instagram will accept for this package code.
+    def _product_for(
+        self, account_id: str, instagram_user_id: str, retailer_id: str
+    ) -> tuple[str, str] | None:
+        """The catalog product for this package code, as (id, landing page).
 
-        Two things make the lookup indirect. The shop's catalog is discovered
+        Three things make the lookup indirect. The shop's catalog is discovered
         rather than configured, because pinning a catalog id here would break
-        the day the shop is pointed at another one. And the id that works is
-        not the one the catalog's own /products edge returns - that one is
-        refused with "Cannot tag product". Only the merchant-scoped id from
-        catalog_product_search is accepted.
+        the day the shop is pointed at another one. The id that works is not
+        the one the catalog's own /products edge returns - that one is refused
+        with "Cannot tag product" - so it comes from catalog_product_search.
+        And catalog_product_search does not carry the product's url, which the
+        caption needs in order to drop a link the tag has made redundant, so
+        that comes from the /products edge instead.
         """
         catalogs = (self._get(account_id, f'/{instagram_user_id}/available_catalogs') or {}).get('data') or []
         if not catalogs:
@@ -247,11 +298,23 @@ class ComposioPublisher:
             f'/{instagram_user_id}/catalog_product_search?catalog_id={catalog_id}&limit=100',
         )
 
+        product_id = None
         for product in found.get('data') or []:
             if product.get('retailer_id') == retailer_id:
-                return product.get('product_id')
+                product_id = product.get('product_id')
+                break
 
-        return None
+        if not product_id:
+            return None
+
+        listed = self._get(account_id, f'/{catalog_id}/products?fields=retailer_id,url&limit=100')
+        product_url = ''
+        for product in listed.get('data') or []:
+            if product.get('retailer_id') == retailer_id:
+                product_url = product.get('url') or ''
+                break
+
+        return product_id, product_url
 
     def _tagged_children(
         self, account_id: str, instagram_user_id: str, image_urls: list[str], product_id: str
@@ -301,8 +364,8 @@ class ComposioPublisher:
 
     def _product_tagged_children(
         self, instagram_user_id: str | None, image_urls: list[str], package_code: str
-    ) -> tuple[list[str] | None, str | None]:
-        """Children with the product tagged, or (None, reason) to post without it.
+    ) -> tuple[list[str] | None, str | None, str]:
+        """Children with the product tagged, or (None, reason, '') to post without it.
 
         Every failure here is deliberately non-fatal. A missing shop
         connection, a package the catalog has never heard of, a product pulled
@@ -315,19 +378,22 @@ class ComposioPublisher:
         try:
             account_id = self._shopping_account_id()
             if not account_id:
-                return None, 'no Meta shop connection is linked'
+                return None, 'no Meta shop connection is linked', ''
 
             # Deliberately ignores the instagram_user_id the publish path uses:
             # the shopping edges live on the business account id instead.
             business_id = self._business_account_id(account_id)
 
-            product_id = self._product_id_for(account_id, business_id, package_code)
-            if not product_id:
-                return None, f'{package_code} is not in the shop catalog'
+            product = self._product_for(account_id, business_id, package_code)
+            if not product:
+                return None, f'{package_code} is not in the shop catalog', ''
 
-            return self._tagged_children(account_id, business_id, image_urls, product_id), None
+            product_id, product_url = product
+            children = self._tagged_children(account_id, business_id, image_urls, product_id)
+
+            return children, None, product_url
         except Exception as exc:  # noqa: BLE001 - the post must survive any of these
-            return None, str(exc)
+            return None, str(exc), ''
 
     # Meta answers this when it cannot resolve a collaborator, and it means the
     # username is wrong or the account is private. It groups both causes, so the
@@ -441,11 +507,15 @@ class ComposioPublisher:
         child_creation_ids: list[str] = []
 
         if package_code:
-            tagged, product_tag_skipped = self._product_tagged_children(
+            tagged, product_tag_skipped, product_url = self._product_tagged_children(
                 instagram_user_id, image_urls, package_code
             )
             if tagged:
                 child_creation_ids = tagged
+                # The tag now carries the link, so the caption's copy of it is
+                # dead text. Dropped only on success: a post that lost its tag
+                # must keep the only pointer it has left.
+                caption = drop_trailing_link(caption, product_url)
             else:
                 print(f'Posting without a product tag ({package_code}): {product_tag_skipped}')
 

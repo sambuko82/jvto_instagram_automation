@@ -6,7 +6,7 @@ spent a day producing the photos; losing the whole carousel because a garnish
 could not be attached would be the wrong trade every time.
 """
 
-from jvto_instagram_automation.composio_publisher import ComposioPublisher
+from jvto_instagram_automation.composio_publisher import ComposioPublisher, drop_trailing_link
 from jvto_instagram_automation.sheet_queue import rows_from_values
 
 
@@ -39,7 +39,7 @@ def test_no_shop_connection_skips_the_tag_without_raising():
     publisher = _publisher()
     publisher._shopping_account_id = lambda: None
 
-    children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-X')
+    children, reason, _url = publisher._product_tagged_children('ig', ['u1'], 'package-X')
 
     assert children is None
     assert 'no Meta shop connection' in reason
@@ -49,9 +49,9 @@ def test_a_package_absent_from_the_catalog_skips_the_tag_without_raising():
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
     publisher._business_account_id = lambda account: 'ig_business'
-    publisher._product_id_for = lambda account, ig, code: None
+    publisher._product_for = lambda account, ig, code: None
 
-    children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-GHOST')
+    children, reason, _url = publisher._product_tagged_children('ig', ['u1'], 'package-GHOST')
 
     assert children is None
     assert 'package-GHOST is not in the shop catalog' in reason
@@ -64,9 +64,9 @@ def test_a_meta_outage_mid_lookup_skips_the_tag_without_raising():
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
     publisher._business_account_id = lambda account: 'ig_business'
-    publisher._product_id_for = explode
+    publisher._product_for = explode
 
-    children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-X')
+    children, reason, _url = publisher._product_tagged_children('ig', ['u1'], 'package-X')
 
     assert children is None
     assert reason == 'Meta said no'
@@ -82,10 +82,10 @@ def test_a_container_refused_at_the_last_step_skips_the_tag_without_raising():
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
     publisher._business_account_id = lambda account: 'ig_business'
-    publisher._product_id_for = lambda account, ig, code: '123'
+    publisher._product_for = lambda account, ig, code: ('123', 'https://x.test/p')
     publisher._tagged_children = explode
 
-    children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-X')
+    children, reason, _url = publisher._product_tagged_children('ig', ['u1'], 'package-X')
 
     assert children is None
     assert reason == 'Cannot tag product'
@@ -95,10 +95,10 @@ def test_the_happy_path_returns_children_and_no_reason():
     publisher = _publisher()
     publisher._shopping_account_id = lambda: 'ca_1'
     publisher._business_account_id = lambda account: 'ig_business'
-    publisher._product_id_for = lambda account, ig, code: '123'
+    publisher._product_for = lambda account, ig, code: ('123', 'https://x.test/p')
     publisher._tagged_children = lambda account, ig, urls, pid: ['c1', 'c2']
 
-    children, reason = publisher._product_tagged_children('ig', ['u1', 'u2'], 'package-X')
+    children, reason, _url = publisher._product_tagged_children('ig', ['u1', 'u2'], 'package-X')
 
     assert children == ['c1', 'c2']
     assert reason is None
@@ -115,7 +115,7 @@ def test_an_unreachable_business_account_skips_the_tag_without_raising():
     publisher._shopping_account_id = lambda: 'ca_1'
     publisher._business_account_id = explode
 
-    children, reason = publisher._product_tagged_children('ig', ['u1'], 'package-X')
+    children, reason, _url = publisher._product_tagged_children('ig', ['u1'], 'package-X')
 
     assert children is None
     assert 'no Instagram business account' in reason
@@ -180,3 +180,48 @@ def test_throttling_that_never_clears_still_gives_up():
         assert THROTTLED in str(exc)
 
     assert len(calls) == 3
+
+
+URL = 'https://javavolcano-touroperator.com/tours/from-surabaya/ijen-bromo-madakaripura-3d2n'
+
+
+def test_the_link_is_dropped_when_it_is_the_final_line():
+    caption = f"We ran this one last week.\n\n#bromo #ijen\n\n{URL}"
+
+    assert drop_trailing_link(caption, URL) == "We ran this one last week.\n\n#bromo #ijen"
+
+
+def test_a_doubled_slash_still_counts_as_the_same_link():
+    """The crew portal builds the caption's link by concatenation, so a slug
+    that already starts with '/' produces 'example.com//tours/...'. That is the
+    same page; a stray character must not leave a redundant link behind."""
+    caption = f"Trip report.\n\n#bromo\n\nhttps://javavolcano-touroperator.com//tours/from-surabaya/ijen-bromo-madakaripura-3d2n"
+
+    assert drop_trailing_link(caption, URL) == "Trip report.\n\n#bromo"
+
+
+def test_a_caption_without_the_link_is_returned_untouched():
+    caption = "We ran this one last week.\n\n#bromo #ijen"
+
+    assert drop_trailing_link(caption, URL) == caption
+
+
+def test_a_different_link_is_left_alone():
+    """Only the tagged product's own link is redundant. Anything else the
+    caption ends with is content nobody asked us to remove."""
+    caption = "Book by WhatsApp.\n\n#bromo\n\nhttps://wa.me/6281234567890"
+
+    assert drop_trailing_link(caption, URL) == caption
+
+
+def test_the_link_is_kept_when_it_is_not_the_last_line():
+    """A URL in the middle is part of the prose, not the trailing CTA."""
+    caption = f"See {URL} for dates.\n\n#bromo"
+
+    assert drop_trailing_link(caption, URL) == caption
+
+
+def test_no_product_url_means_no_surgery():
+    caption = f"Trip report.\n\n{URL}"
+
+    assert drop_trailing_link(caption, '') == caption
