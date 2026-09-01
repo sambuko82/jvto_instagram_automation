@@ -95,7 +95,12 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
 
     if publisher is None:
         publisher = ComposioPublisher(settings.composio_api_key, settings.composio_user_id)
-    result = publisher.publish_carousel(row.photo_urls, row.caption, settings.instagram_user_id)
+    result = publisher.publish_carousel(
+        row.photo_urls,
+        row.caption,
+        settings.instagram_user_id,
+        collaborators=row.instagram_usernames,
+    )
 
     if result.get('status') != 'published':
         print(f"Publish failed: {result.get('status')} - {result.get('message')}")
@@ -104,7 +109,9 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None) -> int:
     if not _mark_uploaded_with_retry(queue, row, now):
         return 1
 
-    print(f'Published {row.booking_id} and marked row {row.row_number} as uploaded.')
+    tagged = [u for u in row.instagram_usernames if u not in result.get('dropped_collaborators', [])]
+    credit = f' Collaborators tagged: {", ".join(tagged)}.' if tagged else ''
+    print(f'Published {row.booking_id} and marked row {row.row_number} as uploaded.{credit}')
     return 0
 
 

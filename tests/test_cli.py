@@ -59,8 +59,8 @@ class FakePublisher:
         self.result = result
         self.calls = []
 
-    def publish_carousel(self, image_urls, caption, instagram_user_id=None):
-        self.calls.append((image_urls, caption, instagram_user_id))
+    def publish_carousel(self, image_urls, caption, instagram_user_id=None, collaborators=None):
+        self.calls.append((image_urls, caption, instagram_user_id, collaborators or []))
         return self.result
 
 
@@ -174,3 +174,36 @@ def test_publish_succeeds_but_marking_fails_every_attempt_is_reported_and_nonzer
     assert 'JVTO-1' in out
     assert 'row 2' in out
     assert 'WAS PUBLISHED' in out
+
+
+def test_the_row_s_instagram_usernames_are_passed_as_collaborators(capsys) -> None:
+    rows = rows_from_values([
+        _row(booking="JVTO-9", instagram="anjasstywn, kiki.the.explorer",
+             links="Pickup: u1\nDrop: u2", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published'})
+
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+
+    assert rc == 0
+    assert publisher.calls[0][3] == ["anjasstywn", "kiki.the.explorer"]
+    assert "Collaborators tagged: anjasstywn, kiki.the.explorer" in capsys.readouterr().out
+
+
+def test_a_post_still_counts_when_instagram_refused_the_collaborators(capsys) -> None:
+    # A crew member who renamed their account should cost the trip its credit,
+    # not its post.
+    rows = rows_from_values([
+        _row(booking="JVTO-9", instagram="gone_handle",
+             links="Pickup: u1\nDrop: u2", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published', 'dropped_collaborators': ['gone_handle']})
+
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher)
+
+    assert rc == 0
+    assert len(queue.mark_uploaded_calls) == 1
+    out = capsys.readouterr().out
+    assert "Collaborators tagged" not in out

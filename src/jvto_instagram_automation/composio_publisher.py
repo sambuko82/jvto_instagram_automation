@@ -86,7 +86,98 @@ class ComposioPublisher:
                     continue
         raise RuntimeError('No compatible Instagram tool call succeeded')
 
-    def publish_carousel(self, image_urls: list[str], caption: str, instagram_user_id: str | None = None) -> dict[str, Any]:
+
+    def _connected_account_id(self) -> str | None:
+        """The Instagram account linked under this user id.
+
+        Looked up rather than configured: the id belongs to the connection, not
+        to this deployment, and hard-coding it would break silently the first
+        time the account is relinked.
+        """
+        from composio import Composio
+
+        client = Composio(api_key=self.api_key).client
+        page = client.connected_accounts.list(user_ids=[self.user_id])
+
+        for account in getattr(page, 'items', []) or []:
+            toolkit = getattr(account, 'toolkit', None)
+            slug = getattr(toolkit, 'slug', None) or (toolkit or {}).get('slug') if toolkit else None
+            if slug == 'instagram' and getattr(account, 'status', None) == 'ACTIVE':
+                return getattr(account, 'id', None)
+
+        return None
+
+    # Meta answers this when it cannot resolve a collaborator, and it means the
+    # username is wrong or the account is private. It groups both causes, so the
+    # only safe response is to drop the tags and still publish.
+    _COLLABORATOR_REJECTED = 'private profile or invalid'
+
+    def _create_carousel_container(
+        self, instagram_user_id: str | None, caption: str, children: list[str], collaborators: list[str]
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Create the parent container, giving up the collaborator tags before
+        giving up the post.
+
+        A crew member who renamed their Instagram account should cost the trip
+        its collaborator credit, not its entire post.
+        """
+        import json
+
+        from composio import Composio
+
+        account_id = self._connected_account_id()
+        if not account_id:
+            raise RuntimeError('No ACTIVE Instagram connection found for this user id')
+
+        client = Composio(api_key=self.api_key).client
+
+        def attempt(tags: list[str]) -> dict[str, Any]:
+            body: dict[str, Any] = {
+                'media_type': 'CAROUSEL',
+                'children': ','.join(children),
+                'caption': caption,
+            }
+            if tags:
+                body['collaborators'] = json.dumps(tags)
+
+            response = client.tools.proxy(
+                endpoint=f'/{instagram_user_id}/media',
+                method='POST',
+                body=body,
+                connected_account_id=account_id,
+            )
+            data = response.data if isinstance(response.data, dict) else {}
+
+            if 'id' not in data:
+                message = (data.get('error') or {}).get('message', str(data))
+                raise RuntimeError(message)
+
+            return data
+
+        if not collaborators:
+            return attempt([]), []
+
+        try:
+            return attempt(collaborators), []
+        except RuntimeError as exc:
+            if self._COLLABORATOR_REJECTED not in str(exc):
+                raise
+
+            print(
+                f'Instagram rejected the collaborator tags {collaborators}: the usernames are '
+                'wrong or those accounts are private. Publishing without them - fix the '
+                'instagram_username values so the next post credits them.'
+            )
+
+            return attempt([]), list(collaborators)
+
+    def publish_carousel(
+        self,
+        image_urls: list[str],
+        caption: str,
+        instagram_user_id: str | None = None,
+        collaborators: list[str] | None = None,
+    ) -> dict[str, Any]:
         if not image_urls:
             return {'status': 'dry_run', 'message': 'No image URLs were supplied for carousel publishing.'}
         if not self.is_configured():
@@ -123,15 +214,14 @@ class ComposioPublisher:
                 return {'status': 'error', 'message': f'Child container created for {image_url} but no id was returned.', 'data': child_container}
             child_creation_ids.append(child_id)
 
-        container_payload = {'ig_user_id': instagram_user_id, 'caption': caption, 'children': child_creation_ids}
+        # The carousel container goes through Composio's HTTP proxy rather than
+        # its Instagram tool, because the tool accepts only caption/children and
+        # collaborator tagging needs a parameter it does not expose. The proxy
+        # still uses the same managed connection, so no Meta token is handled
+        # here.
         try:
-            # INSTAGRAM_CREATE_CAROUSEL_CONTAINER is the confirmed real Composio
-            # action name; the lowercase ones are kept only as a defensive
-            # fallback for older toolkit aliases.
-            container = self._invoke_tool(
-                tools,
-                ('INSTAGRAM_CREATE_CAROUSEL_CONTAINER', 'instagram_create_carousel_container', 'instagram_create_container'),
-                container_payload,
+            container, dropped = self._create_carousel_container(
+                instagram_user_id, caption, child_creation_ids, collaborators or []
             )
         except Exception as exc:
             return {'status': 'error', 'message': f'Failed to create carousel container: {exc}'}
@@ -150,4 +240,9 @@ class ComposioPublisher:
         except Exception as exc:
             return {'status': 'error', 'message': f'Carousel container created but publish failed: {exc}', 'creation_id': creation_id}
 
-        return {'status': 'published', 'data': publish_result, 'creation_id': creation_id}
+        return {
+            'status': 'published',
+            'data': publish_result,
+            'creation_id': creation_id,
+            'dropped_collaborators': dropped,
+        }
