@@ -25,6 +25,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--agentic', action='store_true', help='Use LLM-based review-to-caption extraction when credentials are available')
     parser.add_argument('--post-trip', action='store_true', help='Publish the next pending trip photo row from the spreadsheet')
     parser.add_argument('--force', action='store_true', help='Ignore the interval gate and post now')
+    parser.add_argument('--booking-id', default=None,
+                        help='Publish this booking instead of the next queued one')
     return parser
 
 
@@ -61,10 +63,12 @@ def _mark_uploaded_with_retry(queue, row, now, platform: str = 'instagram',
     return False
 
 
-def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publisher=None) -> int:
+def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publisher=None,
+                  booking_id: str | None = None) -> int:
     from datetime import datetime, timezone
 
-    from .sheet_queue import SheetQueue, days_since_last_upload, next_pending, next_unfinished
+    from .sheet_queue import (SheetQueue, _is_postable, days_since_last_upload,
+                              next_pending, next_unfinished)
 
     if not settings.composio_api_key or not settings.trip_photo_spreadsheet_id:
         print('COMPOSIO_API_KEY and TRIP_PHOTO_SPREADSHEET_ID are both required for --post-trip.')
@@ -80,6 +84,22 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publishe
 
     rows = queue.fetch_rows()
     now = datetime.now(timezone.utc)
+
+    # A named booking is an operator decision, so it overrides both the queue
+    # order and the interval gate. It still has to pass the same checks the
+    # queue applies - being chosen by hand does not make a broken row postable.
+    if booking_id:
+        row = next((r for r in rows if r.booking_id == booking_id), None)
+        if row is None:
+            print(f'{booking_id} is not in the sheet. Nothing to do.')
+            return 1
+        if row.is_uploaded:
+            print(f'{booking_id} is already published on both platforms. Nothing to do.')
+            return 0
+        if not _is_postable(row):
+            return 1
+        print(f'Publishing {row.booking_id} ({len(row.photo_urls)} photos) from sheet row {row.row_number}')
+        return _publish(queue, row, now, settings, publisher, fb_publisher)
 
     # A trip stranded on one platform is a repair, not a new post, so it is
     # finished before the schedule is consulted. Otherwise a Facebook failure
@@ -109,6 +129,10 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publishe
     if fb_publisher is None:
         fb_publisher = FacebookPublisher(settings.composio_api_key, settings.composio_user_id)
 
+    return _publish(queue, row, now, settings, publisher, fb_publisher)
+
+
+def _publish(queue, row, now, settings, publisher, fb_publisher) -> int:
     failures = 0
 
     # Independent on purpose. Instagram carries the product tag and the crew
@@ -196,7 +220,7 @@ def main(argv: list[str] | None = None) -> int:
         settings.instagram_user_id = args.instagram_user_id
 
     if args.post_trip:
-        return run_post_trip(settings, args.force)
+        return run_post_trip(settings, args.force, booking_id=args.booking_id)
 
     if args.drive_export:
         ingestion = DriveIngestion(settings.drive_folder_id, settings.composio_api_key, settings.composio_user_id, settings.project_root)

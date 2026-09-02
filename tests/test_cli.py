@@ -375,3 +375,55 @@ def test_a_facebook_failure_does_not_undo_instagram(capsys) -> None:
     assert len(_marked(queue, 'instagram')) == 1     # Instagram stands
     assert _marked(queue, 'facebook') == []          # and Facebook retries next run
     assert 'Facebook publish failed' in capsys.readouterr().out
+
+
+def test_a_named_booking_overrides_the_queue_and_the_gate(capsys) -> None:
+    """Choosing a trip by hand is an operator decision: it jumps the order and
+    ignores the four-day gate, even when a more recent post exists."""
+    recent = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat().replace('+00:00', 'Z')
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-1", links="Pickup: u1\nDrop: u2", caption="cap",
+             uploaded="TRUE", uploaded_at=recent),
+        _row(no="2", booking="JVTO-2", links="Pickup: a\nDrop: b", caption="cap", uploaded="FALSE"),
+        _row(no="3", booking="JVTO-3", links="Pickup: c\nDrop: d", caption="cap", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published'})
+
+    rc = run_post_trip(make_settings(), force=False, queue=queue, publisher=publisher,
+                       fb_publisher=FakeFacebookPublisher(), booking_id="JVTO-3")
+
+    assert rc == 0
+    # JVTO-2 is older and would have been chosen by the queue.
+    assert [c[0].booking_id for c in queue.mark_uploaded_calls] == ['JVTO-3', 'JVTO-3']
+    assert 'waiting for' not in capsys.readouterr().out
+
+
+def test_a_named_booking_still_has_to_pass_the_checks(capsys) -> None:
+    """Being picked by hand does not make a broken row postable."""
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-9", links="Pickup: only-one", caption="cap", uploaded="FALSE"),
+    ])
+    queue = FakeQueue(rows)
+    publisher = FakePublisher({'status': 'published'})
+
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher,
+                       fb_publisher=FakeFacebookPublisher(), booking_id="JVTO-9")
+
+    assert rc == 1
+    assert publisher.calls == []
+    assert 'carousel needs' in capsys.readouterr().out
+
+
+def test_an_unknown_booking_is_reported_not_guessed(capsys) -> None:
+    queue = FakeQueue(rows_from_values([
+        _row(no="1", booking="JVTO-1", links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE"),
+    ]))
+    publisher = FakePublisher({'status': 'published'})
+
+    rc = run_post_trip(make_settings(), force=True, queue=queue, publisher=publisher,
+                       fb_publisher=FakeFacebookPublisher(), booking_id="JVTO-NOPE")
+
+    assert rc == 1
+    assert publisher.calls == []
+    assert 'not in the sheet' in capsys.readouterr().out

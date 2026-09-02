@@ -15,6 +15,10 @@ on:
         description: 'Post now, ignoring the four-day gate'
         type: boolean
         default: false
+      booking_id:
+        description: 'Publish this booking instead of the next queued one'
+        type: string
+        required: false
 
 # A manual workflow_dispatch overlapping the 02:00 UTC schedule would let two
 # runs read the same pending sheet row before either marks it, publishing the
@@ -50,4 +54,6 @@ jobs:
           TRIP_POST_INTERVAL_DAYS: '4'
           FACEBOOK_PAGE_NAME: Java Volcano Tour Operator
         run: |
-          python -m jvto_instagram_automation --post-trip ${{ inputs.force && '--force' || '' }}
+          python -m jvto_instagram_automation --post-trip \
+            ${{ inputs.force && '--force' || '' }} \
+            ${{ inputs.booking_id && format('--booking-id {0}', inputs.booking_id) || '' }}
