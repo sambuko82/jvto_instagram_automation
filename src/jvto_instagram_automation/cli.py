@@ -85,10 +85,15 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publishe
     rows = queue.fetch_rows()
     now = datetime.now(timezone.utc)
 
-    # A named booking is an operator decision, so it overrides both the queue
-    # order and the interval gate. It still has to pass the same checks the
-    # queue applies - being chosen by hand does not make a broken row postable.
+    # Both paths fall through to the single publish below rather than
+    # returning early: an early return here once skipped the publisher
+    # construction underneath it, and --booking-id reached publish_carousel
+    # with None.
     if booking_id:
+        # A named booking is an operator decision, so it overrides both the
+        # queue order and the interval gate. It still has to pass the same
+        # checks the queue applies - being chosen by hand does not make a
+        # broken row postable.
         row = next((r for r in rows if r.booking_id == booking_id), None)
         if row is None:
             print(f'{booking_id} is not in the sheet. Nothing to do.')
@@ -98,29 +103,27 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publishe
             return 0
         if not _is_postable(row):
             return 1
-        print(f'Publishing {row.booking_id} ({len(row.photo_urls)} photos) from sheet row {row.row_number}')
-        return _publish(queue, row, now, settings, publisher, fb_publisher)
+    else:
+        # A trip stranded on one platform is a repair, not a new post, so it is
+        # finished before the schedule is consulted. Otherwise a Facebook
+        # failure would wait four days for the gate to reopen while the
+        # Instagram half sat public and unmatched.
+        row = next_unfinished(rows)
 
-    # A trip stranded on one platform is a repair, not a new post, so it is
-    # finished before the schedule is consulted. Otherwise a Facebook failure
-    # would wait four days for the gate to reopen while the Instagram half sat
-    # public and unmatched.
-    row = next_unfinished(rows)
+        if row is None:
+            # The cron runs daily and this gate enforces the real spacing, so a
+            # run lost to an outage is picked up the next day instead of
+            # slipping a full cycle.
+            elapsed = days_since_last_upload(rows, now)
+            if not force and elapsed is not None and elapsed < settings.trip_post_interval_days:
+                print(f'Last post was {elapsed:.1f} days ago; waiting for {settings.trip_post_interval_days}. Nothing to do.')
+                return 0
 
-    if row is None:
-        # The cron runs daily and this gate enforces the real spacing, so a run
-        # lost to an outage is picked up the next day instead of slipping a
-        # full cycle.
-        elapsed = days_since_last_upload(rows, now)
-        if not force and elapsed is not None and elapsed < settings.trip_post_interval_days:
-            print(f'Last post was {elapsed:.1f} days ago; waiting for {settings.trip_post_interval_days}. Nothing to do.')
+            row = next_pending(rows)
+
+        if row is None:
+            print('No pending trip photo rows. Nothing to do.')
             return 0
-
-        row = next_pending(rows)
-
-    if row is None:
-        print('No pending trip photo rows. Nothing to do.')
-        return 0
 
     print(f'Publishing {row.booking_id} ({len(row.photo_urls)} photos) from sheet row {row.row_number}')
 

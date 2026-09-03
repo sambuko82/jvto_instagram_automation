@@ -416,6 +416,29 @@ def test_a_named_booking_still_has_to_pass_the_checks(capsys) -> None:
     assert 'carousel needs' in capsys.readouterr().out
 
 
+def test_a_named_booking_builds_its_own_publishers(monkeypatch) -> None:
+    """Every other --booking-id test hands in both publishers, which is exactly
+    how the real path shipped broken: the named-booking branch returned before
+    the lazy construction underneath it, and publish_carousel was called on
+    None. This test passes neither, so it fails if that return comes back."""
+    import jvto_instagram_automation.cli as cli
+
+    built = []
+    monkeypatch.setattr(cli, 'ComposioPublisher',
+                        lambda *a, **k: built.append('ig') or FakePublisher({'status': 'published'}))
+    monkeypatch.setattr(cli, 'FacebookPublisher',
+                        lambda *a, **k: built.append('fb') or FakeFacebookPublisher())
+
+    queue = FakeQueue(rows_from_values([
+        _row(no="1", booking="JVTO-7", links="Pickup: a\nDrop: b", caption="cap", uploaded="FALSE"),
+    ]))
+
+    rc = run_post_trip(make_settings(), force=False, queue=queue, booking_id="JVTO-7")
+
+    assert rc == 0
+    assert built == ['ig', 'fb']
+
+
 def test_an_unknown_booking_is_reported_not_guessed(capsys) -> None:
     queue = FakeQueue(rows_from_values([
         _row(no="1", booking="JVTO-1", links="Pickup: u1\nDrop: u2", caption="cap", uploaded="FALSE"),
