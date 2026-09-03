@@ -12,7 +12,8 @@ from jvto_instagram_automation.sheet_queue import (
 
 def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code="",
          crew="C", instagram="", listed_by="Boy", links="", caption="cap",
-         uploaded="FALSE", uploaded_at="", uploaded_fb=None, uploaded_at_fb=""):
+         uploaded="FALSE", uploaded_at="", uploaded_fb=None, uploaded_at_fb="",
+         priority=""):
     """Build a sheet row by name rather than by position.
 
     The columns have shifted once already; positional literals in every
@@ -26,7 +27,7 @@ def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code=""
 
     return [no, booking, customer, package, package_code, crew, instagram,
             listed_by, links, caption, uploaded, uploaded_at,
-            uploaded_fb, uploaded_at_fb]
+            uploaded_fb, uploaded_at_fb, priority]
 
 
 def test_parse_photo_links_keeps_order_and_survives_the_https_colon():
@@ -149,3 +150,55 @@ def test_days_since_last_upload_is_none_when_nothing_was_ever_posted():
     rows = rows_from_values([["1", "JVTO-1", "", "", "", "", "", "FALSE", ""]])
 
     assert days_since_last_upload(rows, datetime(2026, 8, 31, tzinfo=timezone.utc)) is None
+
+
+def test_the_operator_s_order_beats_sheet_order():
+    """The panel writes a position per trip; the publisher must honour it
+    rather than the order the rows happen to sit in."""
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-1", links="a: u1\nb: u2", caption="cap", priority="3"),
+        _row(no="2", booking="JVTO-2", links="a: u3\nb: u4", caption="cap", priority="1"),
+        _row(no="3", booking="JVTO-3", links="a: u5\nb: u6", caption="cap", priority="2"),
+    ])
+
+    assert next_pending(rows).booking_id == "JVTO-2"
+
+
+def test_a_trip_with_no_position_joins_the_back():
+    """A trip the crew just submitted has no position anyone chose, so it must
+    not jump ahead of an order arranged by hand."""
+    rows = rows_from_values([
+        _row(no="1", booking="FRESH", links="a: u1\nb: u2", caption="cap", priority=""),
+        _row(no="2", booking="ORDERED", links="a: u3\nb: u4", caption="cap", priority="9"),
+    ])
+
+    assert next_pending(rows).booking_id == "ORDERED"
+
+
+def test_two_unordered_trips_keep_submission_order():
+    rows = rows_from_values([
+        _row(no="1", booking="OLDER", links="a: u1\nb: u2", caption="cap"),
+        _row(no="2", booking="NEWER", links="a: u3\nb: u4", caption="cap"),
+    ])
+
+    assert next_pending(rows).booking_id == "OLDER"
+
+
+def test_a_junk_position_does_not_crash_the_queue():
+    """The sheet is hand-editable, so a typed position can be anything."""
+    rows = rows_from_values([
+        _row(no="1", booking="JUNK", links="a: u1\nb: u2", caption="cap", priority="satu"),
+        _row(no="2", booking="REAL", links="a: u3\nb: u4", caption="cap", priority="5"),
+    ])
+
+    assert next_pending(rows).booking_id == "REAL"
+
+
+def test_the_order_does_not_override_the_checks():
+    """Being put first does not make a row with one photo postable."""
+    rows = rows_from_values([
+        _row(no="1", booking="BROKEN", links="a: only-one", caption="cap", priority="1"),
+        _row(no="2", booking="FINE", links="a: u1\nb: u2", caption="cap", priority="2"),
+    ])
+
+    assert next_pending(rows).booking_id == "FINE"

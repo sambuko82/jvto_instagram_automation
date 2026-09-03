@@ -25,8 +25,11 @@ COL_IS_UPLOADED_IG = 10
 COL_UPLOADED_AT_IG = 11
 COL_IS_UPLOADED_FB = 12
 COL_UPLOADED_AT_FB = 13
+# Posting order, lowest first. Written by the studio panel; blank on rows the
+# crew just submitted, which sorts them after every numbered row.
+COL_PRIORITY = 14
 
-WIDTH = 14
+WIDTH = 15
 
 # Column letters for the two 'Is Uploaded' cells, which mark_uploaded writes.
 UPLOADED_CELL = {'instagram': 'K', 'facebook': 'M'}
@@ -113,6 +116,20 @@ class TripRow:
         return self.is_uploaded_ig != self.is_uploaded_fb
 
     @property
+    def priority(self) -> float:
+        """Where the operator put this trip in the queue.
+
+        Blank means nobody chose a position, so it sorts after every trip that
+        has one - a newly submitted trip joins the back rather than jumping
+        ahead of an order someone arranged by hand.
+        """
+        raw = self.values[COL_PRIORITY].strip()
+        try:
+            return float(raw)
+        except ValueError:
+            return float('inf')
+
+    @property
     def uploaded_at(self) -> str:
         """The Instagram timestamp, which is what paces the schedule.
 
@@ -169,7 +186,9 @@ def next_pending(rows: list[TripRow]) -> TripRow | None:
     Every skip is printed with its booking id and row number so a human
     reading the Actions log can find the offending row and repair it.
     """
-    for row in rows:
+    # Sorted by the operator's order, then by sheet position for the rows that
+    # have none. Stable on row_number so two blanks keep submission order.
+    for row in sorted(rows, key=lambda r: (r.priority, r.row_number)):
         if row.is_uploaded:
             continue
 
@@ -257,7 +276,7 @@ class SheetQueue:
     def fetch_rows(self) -> list[TripRow]:
         data = self._execute('GOOGLESHEETS_BATCH_GET', {
             'spreadsheet_id': self.spreadsheet_id,
-            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:N'],
+            'ranges': [f'{self.sheet_name}!A{FIRST_DATA_ROW}:O'],
         })
         value_ranges = data.get('valueRanges') or data.get('value_ranges') or []
         values = value_ranges[0].get('values', []) if value_ranges else []

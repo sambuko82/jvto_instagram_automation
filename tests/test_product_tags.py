@@ -12,7 +12,8 @@ from jvto_instagram_automation.sheet_queue import rows_from_values
 
 def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code="",
          crew="C", instagram="", listed_by="Boy", links="", caption="cap",
-         uploaded="FALSE", uploaded_at="", uploaded_fb=None, uploaded_at_fb=""):
+         uploaded="FALSE", uploaded_at="", uploaded_fb=None, uploaded_at_fb="",
+         priority=""):
     # Facebook mirrors Instagram unless a test says otherwise, so existing
     # fixtures keep meaning "posted" or "not posted" rather than accidentally
     # becoming half-finished rows.
@@ -21,7 +22,7 @@ def _row(no="1", booking="JVTO-1", customer="Cust", package="P", package_code=""
 
     return [no, booking, customer, package, package_code, crew, instagram,
             listed_by, links, caption, uploaded, uploaded_at,
-            uploaded_fb, uploaded_at_fb]
+            uploaded_fb, uploaded_at_fb, priority]
 
 
 def _publisher() -> ComposioPublisher:
