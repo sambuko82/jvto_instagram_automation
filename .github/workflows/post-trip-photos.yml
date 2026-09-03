@@ -51,7 +51,12 @@ jobs:
           INSTAGRAM_USER_ID: ${{ secrets.INSTAGRAM_USER_ID }}
           TRIP_PHOTO_SPREADSHEET_ID: ${{ secrets.TRIP_PHOTO_SPREADSHEET_ID }}
           TRIP_PHOTO_SHEET_NAME: Sheet1
-          TRIP_POST_INTERVAL_DAYS: '4'
+          # Set from the studio panel, not edited here: the operator changes
+          # the cadence far more often than anyone touches this file, and a
+          # value hardcoded in the workflow can only be changed by a commit.
+          # Falls back to 4 so a missing variable does not mean "post every
+          # zero days", which would publish the whole queue at once.
+          TRIP_POST_INTERVAL_DAYS: ${{ vars.TRIP_POST_INTERVAL_DAYS || '4' }}
           FACEBOOK_PAGE_NAME: Java Volcano Tour Operator
         run: |
           python -m jvto_instagram_automation --post-trip \
