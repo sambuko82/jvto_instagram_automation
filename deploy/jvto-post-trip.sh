@@ -8,9 +8,10 @@
 # history started in the same second it was requested. So the clock lives here
 # and GitHub only does the work.
 #
-# The workflow keeps its own schedule as a fallback for a day this box is down.
-# The two cannot double-post: the publisher gates on the sheet's own Uploaded
-# At timestamps, so a trip posted at 19:00 blocks the late run that follows.
+# The workflow has no schedule trigger left, so this cron is the ONLY thing
+# that starts a post. If this box is down, or this file is gone, or the token
+# below has expired, nothing posts and nothing reports it - the sheet just
+# stops advancing. The log this writes is the place to look.
 #
 # Passes no inputs, so `force` stays false and the interval gate applies -
 # exactly what the schedule trigger does.
