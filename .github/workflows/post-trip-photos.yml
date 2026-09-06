@@ -2,7 +2,14 @@ name: Post trip photos to Instagram
 
 on:
   schedule:
-    # Daily at 12:00 UTC (19:00 WIB). The four-day spacing is enforced in
+    # FALLBACK ONLY. GitHub queues scheduled runs behind every other repo's:
+    # measured over five consecutive days this fired 2h18m to 3h49m late, so
+    # a 19:00 WIB post landed at 22:30. The real trigger is a cron on the VPS
+    # calling workflow_dispatch, which is not queued - see deploy/README.md.
+    # This stays on for a day that box is down; the interval gate against the
+    # sheet's Uploaded At timestamps stops the two from double-posting.
+    #
+    # Nominally 12:00 UTC (19:00 WIB). The four-day spacing is enforced in
     # --post-trip against the sheet's Uploaded At column, not by this cron:
     # a '*/4' day-of-month expression resets at each month boundary, so
     # 29 Jan to 1 Feb would be three days apart. Running daily and gating on
