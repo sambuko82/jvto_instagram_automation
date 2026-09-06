@@ -26,9 +26,19 @@ behind every other repo's, worst at the top of the hour. Measured:
 
 Not one run was on time. Every `workflow_dispatch` in the same history started
 in the second it was requested, so the delay is specific to the schedule
-trigger. The workflow keeps its `schedule:` as a fallback for a day the VPS is
-down; the publisher's interval gate reads the sheet's own timestamps, so the
-late run finds the trip already posted and does nothing.
+trigger. The workflow has no `schedule:` trigger at all now — this cron is the only
+thing that starts a post.
+
+**That makes this box a single point of failure.** If it is down, or the cron
+is removed, or the token in `.env` expires, nothing posts and nothing says so:
+the sheet just stops advancing. There is no second trigger to cover it. Two
+things to check when posts stop appearing:
+
+    ssh root@31.97.223.43 'tail /var/log/jvto-post-trip.log'
+    ssh root@31.97.223.43 'crontab -l'
+
+A working day writes one `dispatched ...` line. A silent log means the cron
+never ran; a `FAILED:` line names the reason.
 
 ## Installing it
 

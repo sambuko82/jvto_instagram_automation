@@ -1,21 +1,22 @@
 name: Post trip photos to Instagram
 
+# There is deliberately no `schedule:` trigger. GitHub queues scheduled runs
+# behind every other repo's: measured over five consecutive days this fired
+# 2h18m to 3h49m late, so a 19:00 WIB post landed at 22:30. The clock now
+# lives on the VPS, which calls workflow_dispatch - never queued - at 19:00
+# WIB. See deploy/README.md.
+#
+# The cost of removing it: the VPS is now a single point of failure. If that
+# box is down or its cron is broken, NOTHING posts and nothing says so - the
+# sheet simply stops advancing. Check /var/log/jvto-post-trip.log there.
+#
+# The spacing between posts is not this trigger's job either way. It is
+# enforced in --post-trip against the sheet's Uploaded At column, because a
+# '*/4' day-of-month expression resets at each month boundary - 29 Jan to
+# 1 Feb would be three days apart. Firing daily and gating on real timestamps
+# also means a run lost to an outage is picked up the next day rather than
+# slipping a whole cycle.
 on:
-  schedule:
-    # FALLBACK ONLY. GitHub queues scheduled runs behind every other repo's:
-    # measured over five consecutive days this fired 2h18m to 3h49m late, so
-    # a 19:00 WIB post landed at 22:30. The real trigger is a cron on the VPS
-    # calling workflow_dispatch, which is not queued - see deploy/README.md.
-    # This stays on for a day that box is down; the interval gate against the
-    # sheet's Uploaded At timestamps stops the two from double-posting.
-    #
-    # Nominally 12:00 UTC (19:00 WIB). The four-day spacing is enforced in
-    # --post-trip against the sheet's Uploaded At column, not by this cron:
-    # a '*/4' day-of-month expression resets at each month boundary, so
-    # 29 Jan to 1 Feb would be three days apart. Running daily and gating on
-    # real timestamps also means a run lost to an outage is picked up the
-    # next day rather than slipping a whole cycle.
-    - cron: '0 12 * * *'
   workflow_dispatch:
     inputs:
       force:
@@ -27,13 +28,14 @@ on:
         type: string
         required: false
 
-# A manual workflow_dispatch overlapping the 02:00 UTC schedule would let two
-# runs read the same pending sheet row before either marks it, publishing the
-# same trip to the real business Instagram account twice. Queue the second
-# run instead of cancelling the first: cancel-in-progress is deliberately
-# off, because a run killed between publish_carousel succeeding and the row
-# being marked leaves exactly that duplicate-post state - cancelling would
-# just move the race into the workflow runner instead of removing it.
+# Two dispatches overlapping - the VPS cron and someone pressing Posting
+# sekarang in the studio panel - would let two runs read the same pending sheet
+# row before either marks it, publishing the same trip to the real business
+# Instagram account twice. Queue the second run instead of cancelling the
+# first: cancel-in-progress is deliberately off, because a run killed between
+# publish_carousel succeeding and the row being marked leaves exactly that
+# duplicate-post state - cancelling would just move the race into the workflow
+# runner instead of removing it.
 concurrency:
   group: post-trip-photos
   cancel-in-progress: false
