@@ -146,6 +146,55 @@ def test_days_since_last_upload_uses_the_most_recent_timestamp():
     assert days == 4.0
 
 
+def test_the_time_a_publish_took_does_not_eat_into_the_next_interval():
+    """The gate is a day count, not a stopwatch.
+
+    Uploaded At is written when the post FINISHES. On 2026-09-06 the cron
+    fired at 12:00:03Z and the carousel finished at 12:02:29Z, so measuring
+    elapsed seconds made the next day's run 147 seconds short of "1 day" and
+    it skipped - pushing a Monday post to Tuesday, and every later one with
+    it. Meta being slower one evening must not cost a whole posting day.
+    """
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-3794", customer="", package="", crew="", links="",
+             caption="", uploaded="TRUE", uploaded_at="2026-09-06T12:02:29.603664Z"),
+    ])
+
+    # The next daily run, which starts a few seconds BEFORE that clock time.
+    days = days_since_last_upload(rows, datetime(2026, 9, 7, 12, 0, 3, tzinfo=timezone.utc))
+
+    assert days == 1
+    assert days >= 1, 'a one-day interval must let this run publish'
+
+
+def test_two_posts_on_the_same_day_still_count_as_zero_days_apart():
+    """A manual dispatch in the morning must not open the gate that evening."""
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-1", customer="", package="", crew="", links="",
+             caption="", uploaded="TRUE", uploaded_at="2026-09-07T02:00:00Z"),
+    ])
+
+    assert days_since_last_upload(
+        rows, datetime(2026, 9, 7, 12, 0, 3, tzinfo=timezone.utc)
+    ) == 0
+
+
+def test_a_post_late_at_night_belongs_to_the_wib_day_it_happened_on():
+    """22:00 WIB on the 6th is 15:00 UTC on the 6th, but 01:00 WIB on the 7th
+    is still 18:00 UTC on the 6th - counting on UTC dates would call those the
+    same day when the operator saw them on different ones."""
+    rows = rows_from_values([
+        _row(no="1", booking="JVTO-1", customer="", package="", crew="", links="",
+             caption="", uploaded="TRUE", uploaded_at="2026-09-06T18:00:00Z"),
+    ])
+
+    # 2026-09-06T18:00Z is 2026-09-07 01:00 WIB, so by 2026-09-08 19:00 WIB
+    # exactly one WIB day has passed, not two.
+    assert days_since_last_upload(
+        rows, datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
+    ) == 1
+
+
 def test_days_since_last_upload_is_none_when_nothing_was_ever_posted():
     rows = rows_from_values([["1", "JVTO-1", "", "", "", "", "", "FALSE", ""]])
 

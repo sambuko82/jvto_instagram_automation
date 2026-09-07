@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import requests
@@ -224,7 +224,23 @@ def _is_postable(row: TripRow, quiet: bool = False) -> bool:
     return True
 
 
-def days_since_last_upload(rows: list[TripRow], now: datetime) -> float | None:
+#: The posting slot is 19:00 WIB, so "a day" is counted on the operator's
+#: calendar rather than UTC's.
+WIB = timezone(timedelta(hours=7))
+
+
+def days_since_last_upload(rows: list[TripRow], now: datetime) -> int | None:
+    """Whole days between the last post and now, on the WIB calendar.
+
+    Counted in calendar days, NOT elapsed seconds. The publisher fires once a
+    day at a fixed time, and a row's Uploaded At is written when the post
+    FINISHES - a couple of minutes after that, however long Meta took to
+    process the carousel. Measuring seconds would make "1 day" mean 24h00m
+    from a moment that is always slightly past the slot, so the next day's run
+    misses the gate by exactly that processing time and the post slips a whole
+    day. Systematically, not occasionally: it happened on 2026-09-06, where a
+    147-second publish pushed the next post from Monday to Tuesday.
+    """
     timestamps = []
 
     for row in rows:
@@ -241,7 +257,7 @@ def days_since_last_upload(rows: list[TripRow], now: datetime) -> float | None:
     if not timestamps:
         return None
 
-    return (now - max(timestamps)).total_seconds() / 86400
+    return (now.astimezone(WIB).date() - max(timestamps).astimezone(WIB).date()).days
 
 
 class SheetQueue:

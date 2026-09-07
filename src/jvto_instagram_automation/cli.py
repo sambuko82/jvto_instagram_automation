@@ -116,7 +116,7 @@ def run_post_trip(settings, force: bool, queue=None, publisher=None, fb_publishe
             # slipping a full cycle.
             elapsed = days_since_last_upload(rows, now)
             if not force and elapsed is not None and elapsed < settings.trip_post_interval_days:
-                print(f'Last post was {elapsed:.1f} days ago; waiting for {settings.trip_post_interval_days}. Nothing to do.')
+                print(f'Last post was {elapsed} day(s) ago; waiting for {settings.trip_post_interval_days}. Nothing to do.')
                 return 0
 
             row = next_pending(rows)
