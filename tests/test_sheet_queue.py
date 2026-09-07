@@ -149,15 +149,16 @@ def test_days_since_last_upload_uses_the_most_recent_timestamp():
 def test_the_time_a_publish_took_does_not_eat_into_the_next_interval():
     """The gate is a day count, not a stopwatch.
 
-    Uploaded At is written when the post FINISHES. On 2026-09-06 the cron
-    fired at 12:00:03Z and the carousel finished at 12:02:29Z, so measuring
-    elapsed seconds made the next day's run 147 seconds short of "1 day" and
-    it skipped - pushing a Monday post to Tuesday, and every later one with
-    it. Meta being slower one evening must not cost a whole posting day.
+    Uploaded At is `now`, captured after the sheet has been read, so it is
+    always a little past the slot the cron fired on. On 2026-09-06 the cron
+    fired at 12:00:03Z and the row was stamped 12:00:24Z; measuring elapsed
+    seconds left the next day's run 21 seconds short of "1 day" and it
+    skipped, pushing a Monday post to Tuesday. A slow sheet read must not
+    cost a whole posting day.
     """
     rows = rows_from_values([
         _row(no="1", booking="JVTO-3794", customer="", package="", crew="", links="",
-             caption="", uploaded="TRUE", uploaded_at="2026-09-06T12:02:29.603664Z"),
+             caption="", uploaded="TRUE", uploaded_at="2026-09-06T12:00:24.110876Z"),
     ])
 
     # The next daily run, which starts a few seconds BEFORE that clock time.

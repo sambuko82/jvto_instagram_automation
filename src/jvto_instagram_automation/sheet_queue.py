@@ -233,13 +233,13 @@ def days_since_last_upload(rows: list[TripRow], now: datetime) -> int | None:
     """Whole days between the last post and now, on the WIB calendar.
 
     Counted in calendar days, NOT elapsed seconds. The publisher fires once a
-    day at a fixed time, and a row's Uploaded At is written when the post
-    FINISHES - a couple of minutes after that, however long Meta took to
-    process the carousel. Measuring seconds would make "1 day" mean 24h00m
-    from a moment that is always slightly past the slot, so the next day's run
-    misses the gate by exactly that processing time and the post slips a whole
-    day. Systematically, not occasionally: it happened on 2026-09-06, where a
-    147-second publish pushed the next post from Monday to Tuesday.
+    day at a fixed time, but a row's Uploaded At is `now`, captured after the
+    sheet has been read - always a little past the slot. Measuring seconds
+    would make "1 day" mean 24h00m from that moment, so the next day's run
+    misses the gate by however long the read took and the post slips a whole
+    day. Systematically, not occasionally: on 2026-09-06 the cron fired at
+    12:00:03Z and the row was stamped 12:00:24Z, and those 21 seconds pushed
+    the next post from Monday to Tuesday - and every post after it.
     """
     timestamps = []
 
