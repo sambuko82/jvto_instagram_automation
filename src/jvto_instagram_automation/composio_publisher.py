@@ -4,6 +4,7 @@ import os
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 
 def _same_link(one: str, other: str) -> bool:
@@ -292,10 +293,15 @@ class ComposioPublisher:
 
         catalog_id = catalogs[0].get('catalog_id')
 
-        # The roster is 16 packages; one page covers it with room to spare.
+        # `q` is REQUIRED, though nothing says so: without it the endpoint
+        # answers {"data": []} for a catalog that reports 17 products, and the
+        # only visible effect is every post going out untagged. It worked
+        # without one until 2026-09-08. Searching by the exact retailer id is
+        # also the narrowest question to ask - one product is all this needs.
         found = self._get(
             account_id,
-            f'/{instagram_user_id}/catalog_product_search?catalog_id={catalog_id}&limit=100',
+            f'/{instagram_user_id}/catalog_product_search'
+            f'?catalog_id={catalog_id}&q={quote(retailer_id)}&limit=100',
         )
 
         product_id = None

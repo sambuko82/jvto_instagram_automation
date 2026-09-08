@@ -233,3 +233,32 @@ def test_no_product_url_means_no_surgery():
     caption = f"Trip report.\n\n{URL}"
 
     assert drop_trailing_link(caption, '') == caption
+
+
+def test_the_catalog_search_asks_for_the_code_it_is_looking_for():
+    """catalog_product_search needs a `q`, and says nothing when it is missing.
+
+    Called without one it answers {"data": []} for a catalog that reports 17
+    products - not an error, just an empty list - so every post goes out
+    untagged and the panel reports every package as absent from the shop. It
+    worked without a `q` until 2026-09-08. The only way to notice is to assert
+    on the request, because a fake that answers the same either way cannot.
+    """
+    publisher = _publisher()
+    asked: list[str] = []
+
+    def _get(account_id, endpoint):
+        asked.append(endpoint)
+        if 'available_catalogs' in endpoint:
+            return {'data': [{'catalog_id': 'cat1'}]}
+        if 'catalog_product_search' in endpoint:
+            return {'data': [{'retailer_id': 'package-SUB-4D3N-003', 'product_id': '77'}]}
+        return {'data': [{'retailer_id': 'package-SUB-4D3N-003', 'url': 'https://x/p'}]}
+
+    publisher._get = _get
+
+    found = publisher._product_for('acct', 'ig', 'package-SUB-4D3N-003')
+
+    assert found == ('77', 'https://x/p')
+    search = next(e for e in asked if 'catalog_product_search' in e)
+    assert 'q=package-SUB-4D3N-003' in search, search
