@@ -38,3 +38,38 @@ def test_no_local_auth_state_file_is_created() -> None:
     publisher = ComposioPublisher(api_key='test-key')
     assert not hasattr(publisher, 'state_path')
     assert not hasattr(publisher, 'save_state')
+
+
+class _Acct:
+    def __init__(self, id, slug, status, created_at):
+        self.id = id
+        self.status = status
+        self.created_at = created_at
+        self.toolkit = type('T', (), {'slug': slug})()
+
+
+def test_relinking_instagram_leaves_the_dead_connection_behind(monkeypatch) -> None:
+    """Composio reports ACTIVE until something actually calls the token, so a
+    connection Meta invalidated - the account's password changed - still reads
+    ACTIVE and sits beside the fresh one after relinking. Taking the first
+    match would keep choosing the dead one and publishing would stay broken
+    with the account visibly 'connected'."""
+    import composio
+
+    from jvto_instagram_automation.composio_publisher import ComposioPublisher
+
+    accounts = [
+        _Acct('ca_dead', 'instagram', 'ACTIVE', '2026-09-01T00:00:00Z'),
+        _Acct('ca_facebook', 'facebook', 'ACTIVE', '2026-09-09T00:00:00Z'),
+        _Acct('ca_fresh', 'instagram', 'ACTIVE', '2026-09-09T10:00:00Z'),
+    ]
+
+    class _Client:
+        connected_accounts = type(
+            'CA', (), {'list': staticmethod(lambda **kw: type('P', (), {'items': accounts})())}
+        )()
+
+    monkeypatch.setattr(composio, 'Composio', lambda **kw: type('C', (), {'client': _Client()})())
+
+    publisher = ComposioPublisher('key', 'jvto_automation')
+    assert publisher._connected_account_id() == 'ca_fresh'

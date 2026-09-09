@@ -160,13 +160,23 @@ class ComposioPublisher:
         client = Composio(api_key=self.api_key).client
         page = client.connected_accounts.list(user_ids=[self.user_id])
 
+        matches = []
         for account in getattr(page, 'items', []) or []:
             toolkit = getattr(account, 'toolkit', None)
             slug = getattr(toolkit, 'slug', None) or (toolkit or {}).get('slug') if toolkit else None
             if slug == 'instagram' and getattr(account, 'status', None) == 'ACTIVE':
-                return getattr(account, 'id', None)
+                matches.append(account)
 
-        return None
+        if not matches:
+            return None
+
+        # Newest wins. Composio's ACTIVE only means it never recorded a
+        # failure - a token invalidated at Meta's end (the account's password
+        # changed) still reads ACTIVE until something calls it. Relinking
+        # leaves the dead connection sitting there ACTIVE beside the new one,
+        # and taking the first match would keep choosing the dead one.
+        matches.sort(key=lambda a: str(getattr(a, 'created_at', '') or ''), reverse=True)
+        return getattr(matches[0], 'id', None)
 
     # Meta's fetcher pulls each photo from several IPs at once, which trips the
     # crew portal host's burst rate limit; the 429 it gets back is reported as
